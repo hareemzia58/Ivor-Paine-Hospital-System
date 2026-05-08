@@ -1,4 +1,3 @@
-
 --  DDL Script
 -- Database: IvorPaineHospital
 
@@ -15,6 +14,20 @@ GO
 
 USE IvorPaineHospital;
 GO
+
+CREATE TABLE UserLogin (
+    st_id INT PRIMARY KEY,
+    password_hash VARCHAR(255) NOT NULL,
+    is_active BIT DEFAULT 1,
+    created_date DATETIME DEFAULT GETDATE(),
+    
+    CONSTRAINT FK_UserLogin_Staff FOREIGN KEY (st_id) 
+        REFERENCES Staff(st_id) ON DELETE CASCADE
+);
+
+PRINT 'UserLogin table created successfully';
+GO
+
 
 -- 1. STAFF TABLE (Base Table)
 CREATE TABLE Staff (
@@ -252,6 +265,25 @@ CREATE INDEX IDX_Nurse_Ward ON Nurse(w_id);
  
 -- COMMON QUERIES
 GO
+
+CREATE VIEW vw_StaffLogin AS
+SELECT 
+    s.st_id,
+    CONCAT(s.fname, ' ', s.lname) AS full_name,
+    s.email,
+    CASE 
+        WHEN EXISTS (SELECT 1 FROM Consultant c WHERE c.c_id = s.st_id) THEN 'Consultant'
+        WHEN EXISTS (SELECT 1 FROM Doctor d WHERE d.d_id = s.st_id) THEN 'Doctor'
+        WHEN EXISTS (SELECT 1 FROM Nurse n WHERE n.n_id = s.st_id) THEN 'Nurse'
+        ELSE 'Staff'
+    END AS staff_type,
+    ul.is_active,
+    ul.created_date AS account_created
+FROM Staff s
+INNER JOIN UserLogin ul ON s.st_id = ul.st_id;
+GO
+
+
 -- View: Current Patients (Admitted but not discharged)
 CREATE VIEW vw_CurrentPatients AS
 SELECT 

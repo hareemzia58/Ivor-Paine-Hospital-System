@@ -3,6 +3,35 @@
 USE IvorPaineHospital;
 GO
 
+-- Insert all 25 staff members with their default passwords
+-- Password format: pass[st_id]@IPH (e.g., pass1@IPH, pass2@IPH, etc.)
+INSERT INTO UserLogin (st_id, password_hash, is_active) VALUES
+(1, CONVERT(VARCHAR(255), HASHBYTES('MD5', 'pass1@IPH'), 2), 1),
+(2, CONVERT(VARCHAR(255), HASHBYTES('MD5', 'pass2@IPH'), 2), 1),
+(3, CONVERT(VARCHAR(255), HASHBYTES('MD5', 'pass3@IPH'), 2), 1),
+(4, CONVERT(VARCHAR(255), HASHBYTES('MD5', 'pass4@IPH'), 2), 1),
+(5, CONVERT(VARCHAR(255), HASHBYTES('MD5', 'pass5@IPH'), 2), 1),
+(6, CONVERT(VARCHAR(255), HASHBYTES('MD5', 'pass6@IPH'), 2), 1),
+(7, CONVERT(VARCHAR(255), HASHBYTES('MD5', 'pass7@IPH'), 2), 1),
+(8, CONVERT(VARCHAR(255), HASHBYTES('MD5', 'pass8@IPH'), 2), 1),
+(9, CONVERT(VARCHAR(255), HASHBYTES('MD5', 'pass9@IPH'), 2), 1),
+(10, CONVERT(VARCHAR(255), HASHBYTES('MD5', 'pass10@IPH'), 2), 1),
+(11, CONVERT(VARCHAR(255), HASHBYTES('MD5', 'pass11@IPH'), 2), 1),
+(12, CONVERT(VARCHAR(255), HASHBYTES('MD5', 'pass12@IPH'), 2), 1),
+(13, CONVERT(VARCHAR(255), HASHBYTES('MD5', 'pass13@IPH'), 2), 1),
+(14, CONVERT(VARCHAR(255), HASHBYTES('MD5', 'pass14@IPH'), 2), 1),
+(15, CONVERT(VARCHAR(255), HASHBYTES('MD5', 'pass15@IPH'), 2), 1),
+(16, CONVERT(VARCHAR(255), HASHBYTES('MD5', 'pass16@IPH'), 2), 1),
+(17, CONVERT(VARCHAR(255), HASHBYTES('MD5', 'pass17@IPH'), 2), 1),
+(18, CONVERT(VARCHAR(255), HASHBYTES('MD5', 'pass18@IPH'), 2), 1),
+(19, CONVERT(VARCHAR(255), HASHBYTES('MD5', 'pass19@IPH'), 2), 1),
+(20, CONVERT(VARCHAR(255), HASHBYTES('MD5', 'pass20@IPH'), 2), 1),
+(21, CONVERT(VARCHAR(255), HASHBYTES('MD5', 'pass21@IPH'), 2), 1),
+(22, CONVERT(VARCHAR(255), HASHBYTES('MD5', 'pass22@IPH'), 2), 1),
+(23, CONVERT(VARCHAR(255), HASHBYTES('MD5', 'pass23@IPH'), 2), 1),
+(24, CONVERT(VARCHAR(255), HASHBYTES('MD5', 'pass24@IPH'), 2), 1),
+(25, CONVERT(VARCHAR(255), HASHBYTES('MD5', 'pass25@IPH'), 2), 1);
+
 -- 1. INSERT SPECIALITIES
 INSERT INTO Speciality (speciality, description) VALUES
 ('Cardiology', 'Heart and cardiovascular diseases treatment'),
