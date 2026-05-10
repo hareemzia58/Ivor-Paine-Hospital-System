@@ -1,6 +1,6 @@
 <?php
 /* ---------------- DB CONNECTION ---------------- */
-$serverName = "DESKTOP-90PT6N0\\SQLEXPRESS";  // SQL Server instance
+$serverName = "localhost\\SQLEXPRESS";  // SQL Server instance
 $options = [
     "Database" => "IvorPaineHospital",  // your hospital DB name
     "Uid"      => "",                   // SQL Server username (leave empty if using Windows Auth)
