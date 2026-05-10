@@ -967,6 +967,63 @@ $multi_count = count($multi_patients);
                 color: white;
             }
         }
+
+                /* Treatment specific styles */
+        .treatments-list {
+            margin-bottom: 16px;
+        }
+        
+        .treatment-item-card {
+            background: #F8FAFC;
+            border-radius: 10px;
+            padding: 10px;
+            margin-bottom: 8px;
+            border-left: 3px solid #2C527A;
+        }
+        
+        .treatment-code {
+            font-weight: 700;
+            color: #1E3A5F;
+            font-size: 0.75rem;
+            margin-bottom: 4px;
+        }
+        
+        .treatment-dates {
+            font-size: 0.65rem;
+            color: #718096;
+        }
+        
+        .treatment-doctor {
+            font-size: 0.65rem;
+            color: #2C527A;
+            margin-top: 4px;
+        }
+        
+        .toggle-btn-treatment {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 16px;
+            background: transparent;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-family: 'Inter', sans-serif;
+            font-size: 0.85rem;
+            font-weight: 500;
+            color: #4A5568;
+            transition: all 0.2s;
+        }
+        
+        .toggle-btn-treatment.active {
+            background: white;
+            color: #1E3A5F;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        
+        .toggle-btn-treatment:hover {
+            background: #F1F5F9;
+        }
     </style>
 </head>
 <body>
@@ -1284,13 +1341,239 @@ $multi_count = count($multi_patients);
         <?php endif; ?>
     </div>
     
-    <!-- Tab 3: Patients by Treatment (Coming Soon) -->
+    <!-- Tab 3: Patients by Treatment -->
     <div id="tab-by-treatment" class="tab-content">
-        <div class="no-data">
-            <span class="material-icons">construction</span>
-            <p>Coming Soon: Patients grouped by treatment type</p>
-            <small>This feature is currently under development</small>
-        </div>
+        <?php
+        // QUERY TO GET PATIENTS WITH TREATMENTS (without complaint link since it doesn't exist)
+        $treatment_filter_sql = "SELECT 
+                    p.p_id,
+                    p.fname,
+                    p.lname,
+                    p.dob,
+                    p.admission_date,
+                    p.discharge_date,
+                    p.bed_no,
+                    w.name AS ward_name,
+                    CASE WHEN p.discharge_date IS NULL THEN 'Active' ELSE 'Discharged' END as status,
+                    (SELECT COUNT(*) FROM Complaint c WHERE c.p_id = p.p_id) as complaint_count,
+                    (SELECT COUNT(*) FROM Treatment t WHERE t.p_id = p.p_id) as treatment_count
+                FROM Patient p
+                LEFT JOIN Ward w ON p.w_id = w.w_id
+                WHERE EXISTS (SELECT 1 FROM Treatment t2 WHERE t2.p_id = p.p_id)
+                ORDER BY treatment_count DESC, complaint_count DESC";
+        
+        $treatment_filter_stmt = sqlsrv_query($conn, $treatment_filter_sql);
+        $treatment_filter_patients = [];
+        
+        if ($treatment_filter_stmt !== false) {
+            while ($row = sqlsrv_fetch_array($treatment_filter_stmt, SQLSRV_FETCH_ASSOC)) {
+                // Format dates
+                if ($row['dob'] instanceof DateTime) $row['dob'] = $row['dob']->format('Y-m-d');
+                if ($row['admission_date'] instanceof DateTime) $row['admission_date'] = $row['admission_date']->format('Y-m-d');
+                if ($row['discharge_date'] instanceof DateTime) $row['discharge_date'] = $row['discharge_date']->format('Y-m-d');
+                $treatment_filter_patients[] = $row;
+            }
+        }
+        
+        // Get unique treatment counts for stats
+        $unique_treatments_sql = "SELECT COUNT(*) as count FROM Treatment";
+        $unique_treatments_stmt = sqlsrv_query($conn, $unique_treatments_sql);
+        $total_unique_treatments = $unique_treatments_stmt ? sqlsrv_fetch_array($unique_treatments_stmt, SQLSRV_FETCH_ASSOC)['count'] : 0;
+        
+        $total_treatment_patients = count($treatment_filter_patients);
+        
+        // Get treatments grouped by patient for detailed view (without complaint link)
+        $detailed_treatment_sql = "SELECT 
+                    t.t_code,
+                    t.startdate,
+                    t.enddate,
+                    t.p_id,
+                    CONCAT(s.fname, ' ', s.lname) AS doctor_name
+                FROM Treatment t
+                INNER JOIN Doctor d ON t.d_id = d.d_id
+                INNER JOIN Staff s ON d.d_id = s.st_id
+                ORDER BY t.p_id, t.t_code";
+        
+        $detailed_treatment_stmt = sqlsrv_query($conn, $detailed_treatment_sql);
+        $patient_treatments = [];
+        
+        if ($detailed_treatment_stmt !== false) {
+            while ($row = sqlsrv_fetch_array($detailed_treatment_stmt, SQLSRV_FETCH_ASSOC)) {
+                if ($row['startdate'] instanceof DateTime) $row['startdate'] = $row['startdate']->format('Y-m-d');
+                if ($row['enddate'] instanceof DateTime) $row['enddate'] = $row['enddate']->format('Y-m-d');
+                
+                $p_id = $row['p_id'];
+                if (!isset($patient_treatments[$p_id])) {
+                    $patient_treatments[$p_id] = [];
+                }
+                $patient_treatments[$p_id][] = $row;
+            }
+        }
+        ?>
+        
+        <?php if ($total_treatment_patients > 0): ?>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-icon"><span class="material-icons">medical_services</span></div>
+                    <div class="stat-info">
+                        <h3><?php echo $total_unique_treatments; ?></h3>
+                        <p>Total Treatments</p>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon"><span class="material-icons">people</span></div>
+                    <div class="stat-info">
+                        <h3><?php echo $total_treatment_patients; ?></h3>
+                        <p>Patients with Treatments</p>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon"><span class="material-icons">trending_up</span></div>
+                    <div class="stat-info">
+                        <h3><?php echo $total_unique_treatments > 0 && $total_treatment_patients > 0 ? round($total_unique_treatments / $total_treatment_patients, 1) : 0; ?></h3>
+                        <p>Avg Treatments/Patient</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="dashboard-header">
+                <h3>Patients by Treatment</h3>
+                <div class="view-toggle">
+                    <button class="toggle-btn-treatment active" onclick="toggleTreatmentView('table')">
+                        <span class="material-icons">table_view</span> Table View
+                    </button>
+                    <button class="toggle-btn-treatment" onclick="toggleTreatmentView('cards')">
+                        <span class="material-icons">dashboard</span> Card View
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Cards View for Treatments -->
+            <div id="treatmentCardsView" class="cards-container" style="display: none;">
+                <?php foreach ($treatment_filter_patients as $patient): 
+                    $display_id = 'P' . str_pad($patient['p_id'], 3, '0', STR_PAD_LEFT);
+                    $patient_tx = $patient_treatments[$patient['p_id']] ?? [];
+                ?>
+                    <div class="patient-card" onclick="viewRecord(<?php echo $patient['p_id']; ?>)">
+                        <div class="card-header">
+                            <h4><?php echo htmlspecialchars($patient['fname'] . ' ' . $patient['lname']); ?></h4>
+                            <div class="patient-id">ID: <?php echo $display_id; ?></div>
+                            <div class="ward-badge"><?php echo htmlspecialchars($patient['ward_name'] ?? 'No Ward'); ?></div>
+                        </div>
+                        <div class="card-body">
+                            <div class="stats-row">
+                                <div class="stat-pill">
+                                    <span class="stat-number"><?php echo $patient['complaint_count'] ?? 0; ?></span>
+                                    <span class="stat-label">Complaints</span>
+                                </div>
+                                <div class="stat-pill">
+                                    <span class="stat-number"><?php echo $patient['treatment_count'] ?? 0; ?></span>
+                                    <span class="stat-label">Treatments</span>
+                                </div>
+                            </div>
+                            <?php if (count($patient_tx) > 0): ?>
+                                <div class="treatments-list">
+                                    <?php foreach ($patient_tx as $treatment): ?>
+                                        <div class="treatment-item-card">
+                                            <div class="treatment-code">
+                                                Treatment #<?php echo $treatment['t_code']; ?>
+                                            </div>
+                                            <div class="treatment-dates">
+                                                Started: <?php echo $treatment['startdate'] ?? 'N/A'; ?>
+                                                <?php if ($treatment['enddate']): ?>
+                                                    | Ended: <?php echo $treatment['enddate']; ?>
+                                                <?php else: ?>
+                                                    | <span style="color: #2C527A;">Ongoing</span>
+                                                <?php endif; ?>
+                                            </div>
+                                            <div class="treatment-doctor">
+                                                Dr. <?php echo htmlspecialchars($treatment['doctor_name']); ?>
+                                            </div>
+                                        </div>
+                                    <?php endforeach; ?>
+                                </div>
+                            <?php endif; ?>
+                            <div class="status-indicator <?php echo $patient['status'] === 'Active' ? 'status-active-card' : 'status-discharged-card'; ?>">
+                                <span class="material-icons" style="font-size: 14px;"><?php echo $patient['status'] === 'Active' ? 'fiber_manual_record' : 'check_circle'; ?></span>
+                                <?php echo $patient['status']; ?>
+                            </div>
+                            <button class="view-details-btn" onclick="event.stopPropagation(); viewRecord(<?php echo $patient['p_id']; ?>)">
+                                <span class="material-icons">visibility</span>
+                                View Full Record
+                            </button>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+            
+            <!-- Table View for Treatments -->
+            <div id="treatmentTableView" class="table-container">
+                <div class="table-header">
+                    <h3>Patient Treatment Records</h3>
+                </div>
+                <div class="table-responsive">
+                    <table class="patients-table">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Patient</th>
+                                <th>Ward</th>
+                                <th>Treatments</th>
+                                <th>Complaints</th>
+                                <th>Status</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($treatment_filter_patients as $patient): 
+                                $display_id = 'P' . str_pad($patient['p_id'], 3, '0', STR_PAD_LEFT);
+                                $patient_tx = $patient_treatments[$patient['p_id']] ?? [];
+                                $treatment_codes = array_column($patient_tx, 't_code');
+                            ?>
+                                <tr onclick="viewRecord(<?php echo $patient['p_id']; ?>)" style="cursor: pointer;">
+                                    <td><?php echo $display_id; ?></td>
+                                    <td><strong><?php echo htmlspecialchars($patient['fname'] . ' ' . $patient['lname']); ?></strong></td>
+                                    <td><?php echo htmlspecialchars($patient['ward_name'] ?? 'N/A'); ?></td>
+                                    <td>
+                                        <?php if (count($treatment_codes) > 0): ?>
+                                            <span class="treatment-badge">
+                                                <span class="material-icons" style="font-size: 14px;">medical_services</span>
+                                                <?php echo implode(', ', $treatment_codes); ?>
+                                            </span>
+                                        <?php else: ?>
+                                            No treatments
+                                        <?php endif; ?>
+                                    </td>
+                                    <td>
+                                        <span class="complaint-badge">
+                                            <span class="material-icons" style="font-size: 14px;">healing</span>
+                                            <?php echo $patient['complaint_count'] ?? 0; ?>
+                                        </span>
+                                    </td>
+                                    <td>
+                                        <span class="status-badge <?php echo $patient['status'] === 'Active' ? 'status-active' : 'status-discharged'; ?>">
+                                            <?php echo $patient['status']; ?>
+                                        </span>
+                                    </td>
+                                    <td onclick="event.stopPropagation();">
+                                        <button class="view-record-btn" onclick="viewRecord(<?php echo $patient['p_id']; ?>)">
+                                            <span class="material-icons" style="font-size: 14px;">visibility</span>
+                                            View Record
+                                        </button>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        <?php else: ?>
+            <div class="no-data">
+                <span class="material-icons">info</span>
+                <p>No treatment records found</p>
+                <small>Patients need to have treatments assigned to appear here</small>
+            </div>
+        <?php endif; ?>
     </div>
 </div>
 
@@ -1621,6 +1904,34 @@ if (document.getElementById('patientModal')) {
         }
     });
 }
+
+// Toggle view for Treatment tab
+function toggleTreatmentView(view) {
+    const tableView = document.getElementById('treatmentTableView');
+    const cardsView = document.getElementById('treatmentCardsView');
+    const toggleBtns = document.querySelectorAll('.toggle-btn-treatment');
+    
+    if (view === 'table') {
+        tableView.style.display = 'block';
+        cardsView.style.display = 'none';
+        toggleBtns[0].classList.add('active');
+        toggleBtns[1].classList.remove('active');
+        localStorage.setItem('treatmentView', 'table');
+    } else {
+        tableView.style.display = 'none';
+        cardsView.style.display = 'grid';
+        toggleBtns[0].classList.remove('active');
+        toggleBtns[1].classList.add('active');
+        localStorage.setItem('treatmentView', 'cards');
+    }
+}
+
+// Load saved treatment view preference
+const savedTreatmentView = localStorage.getItem('treatmentView');
+if (savedTreatmentView === 'cards') {
+    toggleTreatmentView('cards');
+}
+
 </script>
 </body>
 </html>
