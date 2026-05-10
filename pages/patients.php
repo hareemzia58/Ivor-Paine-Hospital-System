@@ -43,7 +43,7 @@ $search = isset($_GET['search']) ? $_GET['search'] : '';
 $ward_filter = isset($_GET['ward']) ? $_GET['ward'] : '';
 $status_filter = isset($_GET['status']) ? $_GET['status'] : '';
 
-// 5. BUILD THE QUERY
+// 5. BUILD THE QUERY for table view
 $sql = "SELECT DISTINCT 
             p.p_id,
             p.fname,
@@ -93,6 +93,81 @@ if ($stmt === false) {
     die(print_r(sqlsrv_errors(), true));
 }
 
+// 5.5 GET ENHANCED PATIENT DATA FOR CARDS VIEW (Complaint & Treatment counts)
+$enhanced_sql = "SELECT 
+    p.p_id,
+    p.fname,
+    p.lname,
+    w.name AS ward_name,
+    COUNT(DISTINCT c.c_code) as complaint_count,
+    COUNT(DISTINCT t.t_code) as treatment_count,
+    CASE WHEN p.discharge_date IS NULL THEN 'Active' ELSE 'Discharged' END as status
+FROM Patient p
+LEFT JOIN Ward w ON p.w_id = w.w_id
+LEFT JOIN Complaint c ON p.p_id = c.p_id
+LEFT JOIN Treatment t ON p.p_id = t.p_id
+WHERE 1=1";
+
+$enhanced_params = [];
+if (!empty($search)) {
+    $enhanced_sql .= " AND (p.fname LIKE ? OR p.lname LIKE ? OR CAST(p.p_id AS VARCHAR) LIKE ?)";
+    $search_param = "%$search%";
+    $enhanced_params = [$search_param, $search_param, $search_param];
+}
+if (!empty($ward_filter)) {
+    $enhanced_sql .= " AND w.name = ?";
+    $enhanced_params[] = $ward_filter;
+}
+if (!empty($status_filter)) {
+    if ($status_filter == 'Active') {
+        $enhanced_sql .= " AND p.discharge_date IS NULL";
+    } elseif ($status_filter == 'Discharged') {
+        $enhanced_sql .= " AND p.discharge_date IS NOT NULL";
+    }
+}
+
+$enhanced_sql .= " GROUP BY p.p_id, p.fname, p.lname, w.name, p.discharge_date
+                   ORDER BY complaint_count DESC, treatment_count DESC";
+
+$enhanced_stmt = sqlsrv_query($conn, $enhanced_sql, $enhanced_params);
+$dashboard_patients = [];
+if ($enhanced_stmt !== false) {
+    while ($row = sqlsrv_fetch_array($enhanced_stmt, SQLSRV_FETCH_ASSOC)) {
+        foreach ($row as $key => $value) {
+            if ($value instanceof DateTime) {
+                $row[$key] = $value->format('Y-m-d');
+            }
+        }
+        $dashboard_patients[] = $row;
+    }
+}
+
+// 6. GET MULTI-COMPLAINT PATIENTS (2 or more complaints)
+$multi_sql = "SELECT 
+            p.p_id,
+            p.fname,
+            p.lname,
+            COUNT(DISTINCT c.c_code) as complaint_count,
+            COUNT(DISTINCT t.t_code) as treatment_count,
+            w.name AS ward_name,
+            CASE WHEN p.discharge_date IS NULL THEN 'Active' ELSE 'Discharged' END as status
+        FROM Patient p
+        LEFT JOIN Ward w ON p.w_id = w.w_id
+        LEFT JOIN Complaint c ON p.p_id = c.p_id
+        LEFT JOIN Treatment t ON p.p_id = t.p_id
+        WHERE c.c_code IS NOT NULL
+        GROUP BY p.p_id, p.fname, p.lname, w.name, p.discharge_date
+        HAVING COUNT(DISTINCT c.c_code) >= 2
+        ORDER BY complaint_count DESC, treatment_count DESC";
+
+$multi_stmt = sqlsrv_query($conn, $multi_sql);
+$multi_patients = [];
+if ($multi_stmt !== false) {
+    while ($row = sqlsrv_fetch_array($multi_stmt, SQLSRV_FETCH_ASSOC)) {
+        $multi_patients[] = $row;
+    }
+}
+
 // Get distinct wards for filter dropdown
 $ward_sql = "SELECT DISTINCT name FROM Ward ORDER BY name";
 $ward_stmt = sqlsrv_query($conn, $ward_sql);
@@ -111,6 +186,8 @@ $active_count = sqlsrv_fetch_array($active_stmt, SQLSRV_FETCH_ASSOC)['count'];
 $ward_count_sql = "SELECT COUNT(*) as count FROM Ward";
 $ward_count_stmt = sqlsrv_query($conn, $ward_count_sql);
 $ward_count = sqlsrv_fetch_array($ward_count_stmt, SQLSRV_FETCH_ASSOC)['count'];
+
+$multi_count = count($multi_patients);
 ?>
 
 <!DOCTYPE html>
@@ -164,12 +241,79 @@ $ward_count = sqlsrv_fetch_array($ward_count_stmt, SQLSRV_FETCH_ASSOC)['count'];
             color: #718096;
         }
         
-        .filter-section {
+        /* Tabs Styles */
+        .tabs-container {
             background: white;
+            border-radius: 16px;
+            margin-bottom: 24px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+            overflow: hidden;
+        }
+        
+        .tabs {
+            display: flex;
+            background: #F8FAFC;
+            border-bottom: 1px solid #E2E8F0;
+            gap: 0;
+        }
+        
+        .tab-btn {
+            flex: 1;
+            padding: 16px 24px;
+            background: transparent;
+            border: none;
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: #4A5568;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            font-family: 'Inter', sans-serif;
+            position: relative;
+        }
+        
+        .tab-btn .material-icons {
+            font-size: 20px;
+        }
+        
+        .tab-btn:hover {
+            background: #F1F5F9;
+            color: #1E3A5F;
+        }
+        
+        .tab-btn.active {
+            color: #1E3A5F;
+            background: white;
+        }
+        
+        .tab-btn.active::after {
+            content: '';
+            position: absolute;
+            bottom: -1px;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: #1E3A5F;
+        }
+        
+        .tab-content {
+            display: none;
+            padding: 24px;
+            background: white;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+        
+        .filter-section {
+            background: #F8FAFC;
             border-radius: 16px;
             padding: 20px;
             margin-bottom: 24px;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
         }
         
         .search-bar {
@@ -245,6 +389,7 @@ $ward_count = sqlsrv_fetch_array($ward_count_stmt, SQLSRV_FETCH_ASSOC)['count'];
             align-items: center;
             gap: 16px;
             box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+            border: 1px solid #E2E8F0;
         }
         
         .stat-icon {
@@ -272,11 +417,181 @@ $ward_count = sqlsrv_fetch_array($ward_count_stmt, SQLSRV_FETCH_ASSOC)['count'];
             font-size: 0.85rem;
         }
         
+        .dashboard-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+            flex-wrap: wrap;
+            gap: 16px;
+        }
+        
+        .view-toggle {
+            display: flex;
+            gap: 8px;
+            background: #F1F5F9;
+            padding: 4px;
+            border-radius: 12px;
+        }
+        
+        .toggle-btn {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 16px;
+            background: transparent;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-family: 'Inter', sans-serif;
+            font-size: 0.85rem;
+            font-weight: 500;
+            color: #4A5568;
+            transition: all 0.2s;
+        }
+        
+        .toggle-btn.active {
+            background: white;
+            color: #1E3A5F;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        
+        .cards-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+        
+        .patient-card {
+            background: white;
+            border-radius: 16px;
+            overflow: hidden;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+            transition: all 0.3s ease;
+            cursor: pointer;
+            border: 1px solid #E2E8F0;
+        }
+        
+        .patient-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 12px 24px rgba(0, 0, 0, 0.1);
+        }
+        
+        .card-header {
+            background: linear-gradient(135deg, #1E3A5F 0%, #2C527A 100%);
+            color: white;
+            padding: 20px;
+            position: relative;
+        }
+        
+        .card-header h4 {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+        
+        .patient-id {
+            font-size: 0.7rem;
+            opacity: 0.8;
+            font-family: monospace;
+        }
+        
+        .ward-badge {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(255, 255, 255, 0.2);
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.7rem;
+            font-weight: 500;
+        }
+        
+        .card-body {
+            padding: 20px;
+        }
+        
+        .stats-row {
+            display: flex;
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+        
+        .stat-pill {
+            flex: 1;
+            text-align: center;
+            padding: 12px;
+            background: #F8FAFC;
+            border-radius: 12px;
+        }
+        
+        .stat-number {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #1E3A5F;
+            display: block;
+        }
+        
+        .stat-label {
+            font-size: 0.7rem;
+            color: #718096;
+            margin-top: 4px;
+            display: block;
+        }
+        
+        .status-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            margin-bottom: 12px;
+        }
+        
+        .status-active-card {
+            background: #C6F6D5;
+            color: #22543D;
+        }
+        
+        .status-discharged-card {
+            background: #FED7D7;
+            color: #742A2A;
+        }
+        
+        .view-details-btn {
+            width: 100%;
+            padding: 10px;
+            background: #F1F5F9;
+            border: none;
+            border-radius: 10px;
+            color: #1E3A5F;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+        
+        .view-details-btn:hover {
+            background: #E2E8F0;
+            transform: translateY(-1px);
+        }
+        
+        .multi-complaint {
+            border-left: 4px solid #F59E0B;
+        }
+        
         .table-container {
             background: white;
             border-radius: 16px;
             overflow: hidden;
             box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+            border: 1px solid #E2E8F0;
         }
         
         .table-header {
@@ -285,12 +600,46 @@ $ward_count = sqlsrv_fetch_array($ward_count_stmt, SQLSRV_FETCH_ASSOC)['count'];
             align-items: center;
             padding: 20px 24px;
             border-bottom: 1px solid #E2E8F0;
+            background: #F8FAFC;
         }
         
         .table-header h3 {
             font-size: 1.1rem;
             font-weight: 600;
             color: #1E3A5F;
+        }
+        
+        .badge {
+            background: #1E3A5F;
+            color: white;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        
+        .complaint-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: #FEF3C7;
+            color: #92400E;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        
+        .treatment-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: #DBEAFE;
+            color: #1E40AF;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
         }
         
         .table-responsive {
@@ -321,6 +670,7 @@ $ward_count = sqlsrv_fetch_array($ward_count_stmt, SQLSRV_FETCH_ASSOC)['count'];
         
         .patients-table tbody tr:hover {
             background: #F8FAFC;
+            cursor: pointer;
         }
         
         .status-badge {
@@ -358,7 +708,6 @@ $ward_count = sqlsrv_fetch_array($ward_count_stmt, SQLSRV_FETCH_ASSOC)['count'];
             transform: translateY(-1px);
         }
         
-        /* Modal Styles */
         .modal {
             display: none;
             position: fixed;
@@ -428,7 +777,6 @@ $ward_count = sqlsrv_fetch_array($ward_count_stmt, SQLSRV_FETCH_ASSOC)['count'];
             color: #718096;
         }
         
-        /* Patient Detail Styles */
         .patient-profile-header {
             background: linear-gradient(135deg, #1E3A5F 0%, #2C527A 100%);
             color: white;
@@ -552,10 +900,6 @@ $ward_count = sqlsrv_fetch_array($ward_count_stmt, SQLSRV_FETCH_ASSOC)['count'];
             margin-top: 8px;
         }
         
-        .treatment-item strong {
-            color: #1E3A5F;
-        }
-        
         .progress-note {
             background: white;
             border-left: 4px solid #2C527A;
@@ -587,7 +931,41 @@ $ward_count = sqlsrv_fetch_array($ward_count_stmt, SQLSRV_FETCH_ASSOC)['count'];
         .no-data {
             color: #718096;
             text-align: center;
-            padding: 20px;
+            padding: 60px;
+        }
+        
+        .no-data .material-icons {
+            font-size: 48px;
+            color: #CBD5E0;
+            margin-bottom: 12px;
+        }
+        
+        @media (max-width: 768px) {
+            .cards-container {
+                grid-template-columns: 1fr;
+            }
+            
+            .dashboard-header {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            
+            .view-toggle {
+                justify-content: center;
+            }
+            
+            .tabs {
+                flex-direction: column;
+            }
+            
+            .tab-btn.active::after {
+                display: none;
+            }
+            
+            .tab-btn.active {
+                background: #1E3A5F;
+                color: white;
+            }
         }
     </style>
 </head>
@@ -603,119 +981,316 @@ $ward_count = sqlsrv_fetch_array($ward_count_stmt, SQLSRV_FETCH_ASSOC)['count'];
     <p>You are logged in as <?php echo htmlspecialchars($_SESSION['role'] ?? 'Staff'); ?></p>
 </div>
 
-<div class="filter-section">
-    <div class="search-bar">
-        <span class="material-icons search-icon">search</span>
-        <form method="GET" action="" id="searchForm" style="flex: 1;">
-            <input type="text" 
-                   name="search" 
-                   id="searchInput"
-                   placeholder="Search by patient name or ID..." 
-                   value="<?php echo htmlspecialchars($search); ?>"
-                   class="search-input">
-            <input type="hidden" name="ward" id="wardHidden" value="<?php echo htmlspecialchars($ward_filter); ?>">
-            <input type="hidden" name="status" id="statusHidden" value="<?php echo htmlspecialchars($status_filter); ?>">
-        </form>
-    </div>
-    
-    <div class="filter-controls">
-        <select id="wardFilter" class="filter-select">
-            <option value="">Filter by Ward - All</option>
-            <?php foreach ($wards as $ward): ?>
-                <option value="<?php echo htmlspecialchars($ward); ?>" 
-                    <?php echo $ward_filter == $ward ? 'selected' : ''; ?>>
-                    <?php echo htmlspecialchars($ward); ?>
-                </option>
-            <?php endforeach; ?>
-        </select>
-        
-        <select id="statusFilter" class="filter-select">
-            <option value="">Filter by Status - All</option>
-            <option value="Active" <?php echo $status_filter == 'Active' ? 'selected' : ''; ?>>Active</option>
-            <option value="Discharged" <?php echo $status_filter == 'Discharged' ? 'selected' : ''; ?>>Discharged</option>
-        </select>
-        
-        <button id="resetFilters" class="reset-btn">
-            <span class="material-icons">refresh</span>
-            Reset
+<!-- Tabs Navigation -->
+<div class="tabs-container">
+    <div class="tabs">
+        <button class="tab-btn active" onclick="switchTab('all-patients')">
+            <span class="material-icons">people</span>
+            All Patients
+        </button>
+        <button class="tab-btn" onclick="switchTab('multi-complaint')">
+            <span class="material-icons">warning</span>
+            Multi-Complaint Patients
+            <?php if ($multi_count > 0): ?>
+                <span style="background: #F59E0B; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.7rem; margin-left: 4px;"><?php echo $multi_count; ?></span>
+            <?php endif; ?>
+        </button>
+        <button class="tab-btn" onclick="switchTab('by-treatment')">
+            <span class="material-icons">medical_services</span>
+            Patients by Treatment
         </button>
     </div>
-</div>
+    
+    <!-- Tab 1: All Patients -->
+    <div id="tab-all-patients" class="tab-content active">
+        <div class="filter-section">
+            <div class="search-bar">
+                <span class="material-icons search-icon">search</span>
+                <form method="GET" action="" id="searchForm" style="flex: 1;">
+                    <input type="text" 
+                           name="search" 
+                           id="searchInput"
+                           placeholder="Search by patient name or ID..." 
+                           value="<?php echo htmlspecialchars($search); ?>"
+                           class="search-input">
+                    <input type="hidden" name="ward" id="wardHidden" value="<?php echo htmlspecialchars($ward_filter); ?>">
+                    <input type="hidden" name="status" id="statusHidden" value="<?php echo htmlspecialchars($status_filter); ?>">
+                </form>
+            </div>
+            
+            <div class="filter-controls">
+                <select id="wardFilter" class="filter-select">
+                    <option value="">Filter by Ward - All</option>
+                    <?php foreach ($wards as $ward): ?>
+                        <option value="<?php echo htmlspecialchars($ward); ?>" 
+                            <?php echo $ward_filter == $ward ? 'selected' : ''; ?>>
+                            <?php echo htmlspecialchars($ward); ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+                
+                <select id="statusFilter" class="filter-select">
+                    <option value="">Filter by Status - All</option>
+                    <option value="Active" <?php echo $status_filter == 'Active' ? 'selected' : ''; ?>>Active</option>
+                    <option value="Discharged" <?php echo $status_filter == 'Discharged' ? 'selected' : ''; ?>>Discharged</option>
+                </select>
+                
+                <button id="resetFilters" class="reset-btn">
+                    <span class="material-icons">refresh</span>
+                    Reset
+                </button>
+            </div>
+        </div>
 
-<div class="stats-grid">
-    <div class="stat-card">
-        <div class="stat-icon"><span class="material-icons">people</span></div>
-        <div class="stat-info">
-            <h3><?php echo $active_count; ?></h3>
-            <p>Active Patients</p>
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-icon"><span class="material-icons">people</span></div>
+                <div class="stat-info">
+                    <h3><?php echo $active_count; ?></h3>
+                    <p>Active Patients</p>
+                </div>
+            </div>
+            
+            <div class="stat-card">
+                <div class="stat-icon"><span class="material-icons">local_hospital</span></div>
+                <div class="stat-info">
+                    <h3><?php echo $ward_count; ?></h3>
+                    <p>Departments</p>
+                </div>
+            </div>
+            
+            <div class="stat-card">
+                <div class="stat-icon"><span class="material-icons">warning</span></div>
+                <div class="stat-info">
+                    <h3><?php echo $multi_count; ?></h3>
+                    <p>Multi-Complaint Patients</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="dashboard-header">
+            <h3>Patient Management</h3>
+            <div class="view-toggle">
+                <button class="toggle-btn active" onclick="toggleView('table')">
+                    <span class="material-icons">table_view</span> Table View
+                </button>
+                <button class="toggle-btn" onclick="toggleView('cards')">
+                    <span class="material-icons">dashboard</span> Card View
+                </button>
+            </div>
+        </div>
+
+        <!-- Cards View -->
+        <div id="cardsView" class="cards-container" style="display: none;">
+            <?php if (count($dashboard_patients) > 0): ?>
+                <?php foreach ($dashboard_patients as $patient): 
+                    $display_id = 'P' . str_pad($patient['p_id'], 3, '0', STR_PAD_LEFT);
+                    $hasMultipleComplaints = ($patient['complaint_count'] ?? 0) >= 2;
+                    $multiClass = $hasMultipleComplaints ? 'multi-complaint' : '';
+                ?>
+                    <div class="patient-card <?php echo $multiClass; ?>" onclick="viewRecord(<?php echo $patient['p_id']; ?>)">
+                        <div class="card-header">
+                            <h4><?php echo htmlspecialchars($patient['fname'] . ' ' . $patient['lname']); ?></h4>
+                            <div class="patient-id">ID: <?php echo $display_id; ?></div>
+                            <div class="ward-badge"><?php echo htmlspecialchars($patient['ward_name'] ?? 'No Ward'); ?></div>
+                        </div>
+                        <div class="card-body">
+                            <div class="stats-row">
+                                <div class="stat-pill">
+                                    <span class="stat-number"><?php echo $patient['complaint_count'] ?? 0; ?></span>
+                                    <span class="stat-label">Complaints</span>
+                                </div>
+                                <div class="stat-pill">
+                                    <span class="stat-number"><?php echo $patient['treatment_count'] ?? 0; ?></span>
+                                    <span class="stat-label">Treatments</span>
+                                </div>
+                            </div>
+                            <div class="status-indicator <?php echo $patient['status'] === 'Active' ? 'status-active-card' : 'status-discharged-card'; ?>">
+                                <span class="material-icons" style="font-size: 14px;"><?php echo $patient['status'] === 'Active' ? 'fiber_manual_record' : 'check_circle'; ?></span>
+                                <?php echo $patient['status']; ?>
+                            </div>
+                            <button class="view-details-btn" onclick="event.stopPropagation(); viewRecord(<?php echo $patient['p_id']; ?>)">
+                                <span class="material-icons">visibility</span>
+                                View Full Record
+                            </button>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
+            <?php else: ?>
+                <div class="no-data">No patients found matching your criteria</div>
+            <?php endif; ?>
+        </div>
+
+        <!-- Table View -->
+        <div id="tableView" class="table-container">
+            <div class="table-header">
+                <h3>Patient Records</h3>
+            </div>
+            <div class="table-responsive">
+                <table class="patients-table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Name</th>
+                            <th>DOB</th>
+                            <th>Ward</th>
+                            <th>Bed</th>
+                            <th>Admission</th>
+                            <th>Status</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php 
+                        $row_count = 0;
+                        while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)): 
+                            $row_count++;
+                            $status = $row['discharge_date'] === null ? 'Active' : 'Discharged';
+                            $status_class = $status === 'Active' ? 'status-active' : 'status-discharged';
+                            $display_id = 'P' . str_pad($row['p_id'], 3, '0', STR_PAD_LEFT);
+                            $dob = $row['dob'] instanceof DateTime ? $row['dob']->format('Y-m-d') : $row['dob'];
+                            $admission = $row['admission_date'] instanceof DateTime ? $row['admission_date']->format('Y-m-d') : $row['admission_date'];
+                        ?>
+                        <tr onclick="viewRecord(<?php echo $row['p_id']; ?>)" style="cursor: pointer;">
+                            <td><?php echo $display_id; ?></td>
+                            <td><strong><?php echo htmlspecialchars($row['fname'] . ' ' . $row['lname']); ?></strong></td>
+                            <td><?php echo $dob; ?></td>
+                            <td><?php echo htmlspecialchars($row['ward_name'] ?? 'N/A'); ?></td>
+                            <td><?php echo htmlspecialchars($row['bed_no'] ?? 'N/A'); ?></td>
+                            <td><?php echo $admission; ?></td>
+                            <td><span class="status-badge <?php echo $status_class; ?>"><?php echo $status; ?></span></td>
+                            <td onclick="event.stopPropagation();">
+                                <button class="view-record-btn" onclick="viewRecord(<?php echo $row['p_id']; ?>)">
+                                    <span class="material-icons" style="font-size: 14px;">visibility</span>
+                                    View Record
+                                </button>
+                            </td>
+                        </tr>
+                        <?php endwhile; ?>
+                        
+                        <?php if ($row_count === 0): ?>
+                        <tr>
+                            <td colspan="8" class="no-data">
+                                <span class="material-icons">search_off</span>
+                                <p>No patients found</p>
+                            </td>
+                        </tr>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
         </div>
     </div>
     
-    <div class="stat-card">
-        <div class="stat-icon"><span class="material-icons">local_hospital</span></div>
-        <div class="stat-info">
-            <h3><?php echo $ward_count; ?></h3>
-            <p>Departments</p>
+    <!-- Tab 2: Multi-Complaint Patients -->
+    <div id="tab-multi-complaint" class="tab-content">
+        <?php if (count($multi_patients) > 0): ?>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-icon"><span class="material-icons">warning</span></div>
+                    <div class="stat-info">
+                        <h3><?php echo count($multi_patients); ?></h3>
+                        <p>Multi-Complaint Patients</p>
+                        <small style="color: #F59E0B;">⚠️ 2+ complaints each</small>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon"><span class="material-icons">local_hospital</span></div>
+                    <div class="stat-info">
+                        <h3><?php echo count(array_unique(array_column($multi_patients, 'ward_name'))); ?></h3>
+                        <p>Departments Involved</p>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon"><span class="material-icons">trending_up</span></div>
+                    <div class="stat-info">
+                        <h3><?php echo round(array_sum(array_column($multi_patients, 'complaint_count')) / count($multi_patients), 1); ?></h3>
+                        <p>Avg Complaints per Patient</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="table-container">
+                <div class="table-header">
+                    <h3>
+                        <span class="material-icons" style="vertical-align: middle;">warning</span>
+                        Patients with Multiple Complaints
+                    </h3>
+                    <span class="badge"><?php echo count($multi_patients); ?> Patients</span>
+                </div>
+                <div class="table-responsive">
+                    <table class="patients-table">
+                        <thead>
+                            <tr>
+                                <th>Patient</th>
+                                <th>Complaints</th>
+                                <th>Treatments</th>
+                                <th>Ward</th>
+                                <th>Status</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($multi_patients as $patient): 
+                                $display_id = 'P' . str_pad($patient['p_id'], 3, '0', STR_PAD_LEFT);
+                            ?>
+                            <tr onclick="viewRecord(<?php echo $patient['p_id']; ?>)" style="cursor: pointer;">
+                                <td>
+                                    <strong><?php echo htmlspecialchars($patient['fname'] . ' ' . $patient['lname']); ?></strong>
+                                    <br>
+                                    <small style="color: #718096;">ID: <?php echo $display_id; ?></small>
+                                </td>
+                                <td>
+                                    <span class="complaint-badge">
+                                        <span class="material-icons" style="font-size: 14px;">healing</span>
+                                        <?php echo $patient['complaint_count']; ?> complaint<?php echo $patient['complaint_count'] != 1 ? 's' : ''; ?>
+                                    </span>
+                                </td>
+                                <td>
+                                    <span class="treatment-badge">
+                                        <span class="material-icons" style="font-size: 14px;">medical_services</span>
+                                        <?php echo $patient['treatment_count']; ?> treatment<?php echo $patient['treatment_count'] != 1 ? 's' : ''; ?>
+                                    </span>
+                                </td>
+                                <td>
+                                    <span class="ward-name">
+                                        <span class="material-icons" style="font-size: 14px;">domain</span>
+                                        <?php echo htmlspecialchars($patient['ward_name'] ?? 'N/A'); ?>
+                                    </span>
+                                </td>
+                                <td>
+                                    <span class="status-badge <?php echo $patient['status'] === 'Active' ? 'status-active' : 'status-discharged'; ?>">
+                                        <?php echo $patient['status']; ?>
+                                    </span>
+                                </td>
+                                <td onclick="event.stopPropagation();">
+                                    <button class="view-record-btn" onclick="viewRecord(<?php echo $patient['p_id']; ?>)">
+                                        <span class="material-icons" style="font-size: 14px;">visibility</span>
+                                        View Record
+                                    </button>
+                                </td>
+                            </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        <?php else: ?>
+            <div class="no-data">
+                <span class="material-icons">check_circle</span>
+                <p>No patients with multiple complaints found</p>
+                <small>Patients need at least 2 complaints to appear here</small>
+            </div>
+        <?php endif; ?>
+    </div>
+    
+    <!-- Tab 3: Patients by Treatment (Coming Soon) -->
+    <div id="tab-by-treatment" class="tab-content">
+        <div class="no-data">
+            <span class="material-icons">construction</span>
+            <p>Coming Soon: Patients grouped by treatment type</p>
+            <small>This feature is currently under development</small>
         </div>
-    </div>
-</div>
-
-<div class="table-container">
-    <div class="table-header">
-        <h3>Patient Records</h3>
-    </div>
-    <div class="table-responsive">
-        <table class="patients-table">
-            <thead>
-                <tr>
-                    <th>ID</th>
-                    <th>Name</th>
-                    <th>DOB</th>
-                    <th>Ward</th>
-                    <th>Bed</th>
-                    <th>Admission</th>
-                    <th>Status</th>
-                    <th>Action</th>
-                </tr>
-            </thead>
-            <tbody>
-                <?php 
-                $row_count = 0;
-                while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)): 
-                    $row_count++;
-                    $status = $row['discharge_date'] === null ? 'Active' : 'Discharged';
-                    $status_class = $status === 'Active' ? 'status-active' : 'status-discharged';
-                    $display_id = 'P' . str_pad($row['p_id'], 3, '0', STR_PAD_LEFT);
-                    $dob = $row['dob'] instanceof DateTime ? $row['dob']->format('Y-m-d') : $row['dob'];
-                    $admission = $row['admission_date'] instanceof DateTime ? $row['admission_date']->format('Y-m-d') : $row['admission_date'];
-                ?>
-                <tr>
-                    <td><?php echo $display_id; ?></td>
-                    <td><strong><?php echo htmlspecialchars($row['fname'] . ' ' . $row['lname']); ?></strong></td>
-                    <td><?php echo $dob; ?></td>
-                    <td><?php echo htmlspecialchars($row['ward_name'] ?? 'N/A'); ?></td>
-                    <td><?php echo htmlspecialchars($row['bed_no'] ?? 'N/A'); ?></td>
-                    <td><?php echo $admission; ?></td>
-                    <td><span class="status-badge <?php echo $status_class; ?>"><?php echo $status; ?></span></td>
-                    <td>
-                        <button class="view-record-btn" onclick="viewRecord(<?php echo $row['p_id']; ?>)">
-                            <span class="material-icons" style="font-size: 14px;">visibility</span>
-                            View Record
-                        </button>
-                    </td>
-                </tr>
-                <?php endwhile; ?>
-                
-                <?php if ($row_count === 0): ?>
-                <tr>
-                    <td colspan="8" style="text-align: center; padding: 60px;">
-                        <span class="material-icons" style="font-size: 48px; color: #CBD5E0;">search_off</span>
-                        <p style="color: #718096; margin-top: 12px;">No patients found</p>
-                    </td>
-                </tr>
-                <?php endif; ?>
-            </tbody>
-        </table>
     </div>
 </div>
 
@@ -732,6 +1307,52 @@ $ward_count = sqlsrv_fetch_array($ward_count_stmt, SQLSRV_FETCH_ASSOC)['count'];
 </div>
 
 <script>
+// Tab switching function
+function switchTab(tabName, event) {
+    // Update tab buttons
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.classList.remove('active');
+    });
+    if (event && event.currentTarget) {
+        event.currentTarget.classList.add('active');
+    } else {
+        const btns = document.querySelectorAll('.tab-btn');
+        if (tabName === 'all-patients') btns[0].classList.add('active');
+        else if (tabName === 'multi-complaint') btns[1].classList.add('active');
+        else if (tabName === 'by-treatment') btns[2].classList.add('active');
+    }
+    
+    // Update tab content
+    document.querySelectorAll('.tab-content').forEach(content => {
+        content.classList.remove('active');
+    });
+    document.getElementById(`tab-${tabName}`).classList.add('active');
+    
+    // Save to localStorage
+    localStorage.setItem('activeTab', tabName);
+}
+
+// View Toggle Function
+function toggleView(view) {
+    const tableView = document.getElementById('tableView');
+    const cardsView = document.getElementById('cardsView');
+    const toggleBtns = document.querySelectorAll('.toggle-btn');
+    
+    if (view === 'table') {
+        tableView.style.display = 'block';
+        cardsView.style.display = 'none';
+        toggleBtns[0].classList.add('active');
+        toggleBtns[1].classList.remove('active');
+        localStorage.setItem('patientView', 'table');
+    } else {
+        tableView.style.display = 'none';
+        cardsView.style.display = 'grid';
+        toggleBtns[0].classList.remove('active');
+        toggleBtns[1].classList.add('active');
+        localStorage.setItem('patientView', 'cards');
+    }
+}
+
 // Apply filters function
 function applyFilters() {
     const search = document.getElementById('searchInput').value;
@@ -758,7 +1379,9 @@ if (document.getElementById('statusFilter')) {
 }
 if (document.getElementById('resetFilters')) {
     document.getElementById('resetFilters').addEventListener('click', () => {
-        window.location.href = window.location.pathname;
+        const url = new URL(window.location.href);
+        url.search = '';
+        window.location.href = url.toString();
     });
 }
 
@@ -773,6 +1396,19 @@ if (document.getElementById('searchInput')) {
     });
 }
 
+// Load saved preferences on page load
+document.addEventListener('DOMContentLoaded', function() {
+    const savedView = localStorage.getItem('patientView');
+    if (savedView === 'cards') {
+        toggleView('cards');
+    }
+    
+    const savedTab = localStorage.getItem('activeTab');
+    if (savedTab && savedTab !== 'all-patients') {
+        switchTab(savedTab);
+    }
+});
+
 // View patient record with full details
 function viewRecord(patientId) {
     const modal = document.getElementById('patientModal');
@@ -781,7 +1417,6 @@ function viewRecord(patientId) {
     modal.classList.add('active');
     modalBody.innerHTML = '<div class="loading-spinner">Loading patient record...</div>';
     
-    // Fix: Use correct path from /php/ directory
     const url = `../pages/get_patient_details.php?id=${patientId}`;
     
     fetch(url)
@@ -814,7 +1449,6 @@ function displayFullPatientRecord(data) {
     const dob = formatDate(patient.dob);
     const admissionDate = formatDate(patient.admission_date);
     
-    // Group treatments by complaint
     const treatmentsByComplaint = {};
     treatments.forEach(treatment => {
         const cCode = treatment.c_code;
@@ -824,7 +1458,6 @@ function displayFullPatientRecord(data) {
         treatmentsByComplaint[cCode].push(treatment);
     });
     
-    // Build complaints HTML
     let complaintsHtml = '';
     if (complaints.length > 0) {
         complaints.forEach(complaint => {
@@ -855,7 +1488,6 @@ function displayFullPatientRecord(data) {
         complaintsHtml = '<div class="no-data">No complaints recorded for this patient.</div>';
     }
     
-    // Build progress HTML
     let progressHtml = '';
     if (progress && progress.length > 0) {
         progress.forEach(note => {
@@ -944,10 +1576,6 @@ function toggleTreatments(complaintCode) {
     const treatmentsDiv = document.getElementById(`treatments-${complaintCode}`);
     if (treatmentsDiv) {
         treatmentsDiv.classList.toggle('show');
-        const complaintItem = treatmentsDiv.closest('.complaint-item');
-        if (complaintItem) {
-            complaintItem.classList.toggle('expanded');
-        }
     }
 }
 
@@ -980,7 +1608,6 @@ function closeModal() {
     modal.classList.remove('active');
 }
 
-// Close modal when clicking outside
 if (document.getElementById('patientModal')) {
     document.getElementById('patientModal').addEventListener('click', function(e) {
         if (e.target === this) {
@@ -988,7 +1615,6 @@ if (document.getElementById('patientModal')) {
         }
     });
     
-    // Close on Escape key
     document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape' && document.getElementById('patientModal').classList.contains('active')) {
             closeModal();

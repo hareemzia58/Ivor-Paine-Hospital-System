@@ -72,7 +72,7 @@ if (!$patient) {
     exit();
 }
 
-// Convert DateTime objects to strings
+// Convert DateTime objects to strings for patient data
 foreach ($patient as $key => $value) {
     if ($value instanceof DateTime) {
         $patient[$key] = $value->format('Y-m-d');
@@ -99,7 +99,56 @@ if ($consultant_stmt) {
     $patient['consultant_name'] = 'Not Assigned';
 }
 
-// Get complaints
+// ============================================
+// QUERY #3: Patients with their complaints, treatments, and treatment dates
+// ============================================
+$complaint_treatment_sql = "SELECT 
+                                c.c_code,
+                                c.title AS complaint_title,
+                                c.description AS complaint_description,
+                                c.created_date AS complaint_date,
+                                t.t_code,
+                                t.startdate AS treatment_start_date,
+                                t.enddate AS treatment_end_date,
+                                CONCAT(s.fname, ' ', s.lname) AS doctor_name,
+                                DATEDIFF(DAY, t.startdate, COALESCE(t.enddate, GETDATE())) AS treatment_duration_days
+                            FROM Patient p
+                            LEFT JOIN Complaint c ON p.p_id = c.p_id
+                            LEFT JOIN Treatment t ON p.p_id = t.p_id
+                            LEFT JOIN Doctor d ON t.d_id = d.d_id
+                            LEFT JOIN Staff s ON d.d_id = s.st_id
+                            WHERE p.p_id = ?
+                            ORDER BY c.created_date DESC, t.startdate DESC";
+
+$complaint_treatment_stmt = sqlsrv_query($conn, $complaint_treatment_sql, array($patient_id));
+$complaint_treatments = [];
+
+if ($complaint_treatment_stmt === false) {
+    error_log("Query #3 Error: " . print_r(sqlsrv_errors(), true));
+} else {
+    while ($row = sqlsrv_fetch_array($complaint_treatment_stmt, SQLSRV_FETCH_ASSOC)) {
+        // Format dates
+        if ($row['complaint_date'] instanceof DateTime) {
+            $row['complaint_date'] = $row['complaint_date']->format('Y-m-d H:i:s');
+        }
+        if ($row['treatment_start_date'] instanceof DateTime) {
+            $row['treatment_start_date'] = $row['treatment_start_date']->format('Y-m-d');
+        }
+        if ($row['treatment_end_date'] instanceof DateTime) {
+            $row['treatment_end_date'] = $row['treatment_end_date']->format('Y-m-d');
+        }
+        
+        // Set default values for NULLs
+        $row['complaint_title'] = $row['complaint_title'] ?? 'No complaint recorded';
+        $row['complaint_description'] = $row['complaint_description'] ?? null;
+        $row['doctor_name'] = $row['doctor_name'] ?? 'Not assigned';
+        $row['treatment_duration_days'] = $row['treatment_duration_days'] ?? 0;
+        
+        $complaint_treatments[] = $row;
+    }
+}
+
+// Get complaints (separate for backward compatibility)
 $complaint_sql = "SELECT 
                     c_code,
                     title,
@@ -116,11 +165,18 @@ if ($complaint_stmt !== false) {
         if ($row['created_date'] instanceof DateTime) {
             $row['created_date'] = $row['created_date']->format('Y-m-d H:i:s');
         }
+        // Add treatment count for each complaint
+        $row['treatment_count'] = 0;
+        foreach ($complaint_treatments as $ct) {
+            if ($ct['c_code'] == $row['c_code'] && $ct['t_code'] !== null) {
+                $row['treatment_count']++;
+            }
+        }
         $complaints[] = $row;
     }
 }
 
-// Get treatments with doctor names
+// Get treatments with doctor names (separate for backward compatibility)
 $treatment_sql = "SELECT 
                     t.t_code,
                     t.startdate,
@@ -185,12 +241,19 @@ if ($progress_stmt !== false) {
     }
 }
 
-// Return the data
+// Return the data with Query #3 included
 echo json_encode([
     'success' => true,
     'patient' => $patient,
     'complaints' => $complaints,
     'treatments' => $treatments,
-    'progress' => $progress
+    'complaint_treatments' => $complaint_treatments,  // ← QUERY #3 RESULT
+    'progress' => $progress,
+    'query_3_summary' => [
+        'total_records' => count($complaint_treatments),
+        'has_treatment_data' => count(array_filter($complaint_treatments, function($item) {
+            return !is_null($item['t_code']);
+        })) > 0
+    ]
 ]);
 ?>
