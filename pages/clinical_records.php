@@ -1,1222 +1,1111 @@
 <?php
-// pages/clinical_records.php
-require_once '../php/db_connect.php';
+// pages/clinical_records.php - Working logic with beautiful UI
 
-$conn = db();
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 
-// DEBUG: Check if connection works and get complaints
-$complaints = [];
-$complaints_result = sqlsrv_query($conn, "SELECT c_code, title, description FROM Complaint ORDER BY title");
+if (!isset($_SESSION['user_id'])) {
+    header('Location: ../php/login.php');
+    exit();
+}
 
-if ($complaints_result === false) {
-    // Log error for debugging
-    $errors = sqlsrv_errors();
-    error_log("Complaint query failed: " . print_r($errors, true));
+$connectionPath = 'php/db_connect.php';
+if (file_exists($connectionPath)) {
+    require_once $connectionPath;
+    if (!isset($conn) && function_exists('db')) {
+        $conn = db();
+    }
 } else {
-    while ($row = sqlsrv_fetch_array($complaints_result, SQLSRV_FETCH_ASSOC)) {
-        $complaints[] = $row;
-    }
-}
-
-// Alternative query if the first one fails - try selecting from the actual table structure
-if (empty($complaints)) {
-    // Try a simpler query to check if table exists and has data
-    $test_result = sqlsrv_query($conn, "SELECT COUNT(*) as count FROM Complaint");
-    if ($test_result) {
-        $count_row = sqlsrv_fetch_array($test_result, SQLSRV_FETCH_ASSOC);
-        error_log("Complaint table has " . ($count_row ? $count_row['count'] : 0) . " records");
+    $connectionPath = '../php/db_connect.php';
+    if (file_exists($connectionPath)) {
+        require_once $connectionPath;
+        if (!isset($conn) && function_exists('db')) {
+            $conn = db();
+        }
     } else {
-        $errors = sqlsrv_errors();
-        error_log("Complaint table may not exist: " . print_r($errors, true));
+        die("Fatal Error: Could not find db_connect.php");
     }
 }
 
-// Get doctors for search
-$doctors = [];
-$doctors_result = sqlsrv_query($conn, "
-    SELECT 
-        d.d_id,
-        s.fname,
-        s.lname,
-        d.position,
-        t.team_name,
-        sp.speciality
-    FROM Doctor d
-    JOIN Staff s ON d.d_id = s.st_id
-    LEFT JOIN Team t ON d.t_id = t.t_id
-    LEFT JOIN Consultant c ON d.d_id = c.c_id
-    LEFT JOIN Speciality sp ON c.sp_id = sp.sp_id
-    ORDER BY s.fname
-");
-if ($doctors_result) {
-    while ($row = sqlsrv_fetch_array($doctors_result, SQLSRV_FETCH_ASSOC)) {
-        $doctors[] = $row;
+if (!$conn) {
+    die("Fatal Error: Database connection failed");
+}
+
+$active_tab = isset($_GET['tab']) ? $_GET['tab'] : 'complaint_view';
+
+// Get all complaints for dropdowns
+$complaints_sql = "SELECT c_code, title, description FROM Complaint ORDER BY title";
+$complaints_stmt = sqlsrv_query($conn, $complaints_sql);
+$complaints_list = [];
+if ($complaints_stmt) {
+    while ($row = sqlsrv_fetch_array($complaints_stmt, SQLSRV_FETCH_ASSOC)) {
+        $complaints_list[] = $row;
     }
 }
 
-// Handle AJAX requests
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WITH']) && $_SERVER['HTTP_X_REQUESTED_WITH'] === 'XMLHttpRequest') {
-    header('Content-Type: application/json');
-    
-    $action = $_POST['action'] ?? '';
-    
-    if ($action === 'get_treatments_by_complaint') {
-        $complaint_code = $_POST['complaint_code'] ?? '';
-        
-        if ($complaint_code) {
-            // Query #6: A list of complaints, treatments given for that complaint and experience history 
-            $sql = "
-                SELECT DISTINCT 
-                    t.t_code,
-                    t.startdate,
-                    t.enddate,
-                    s.fname + ' ' + s.lname as doctor_name,
-                    d.position,
-                    p.fname + ' ' + p.lname as patient_name,
-                    c.title as complaint_title
-                FROM Treatment t
-                INNER JOIN Complaint c ON t.p_id = c.p_id AND c.c_code = ?
-                INNER JOIN Doctor d ON t.d_id = d.d_id
-                INNER JOIN Staff s ON d.d_id = s.st_id
-                INNER JOIN Patient p ON t.p_id = p.p_id
-                WHERE c.c_code = ?
-                ORDER BY t.startdate DESC
-            ";
-            $params = [$complaint_code, $complaint_code];
-            $stmt = sqlsrv_query($conn, $sql, $params);
-            
-            $treatments = [];
-            if ($stmt) {
-                while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
-                    $treatments[] = $row;
-                }
-            }
-            
-            // Get doctors experience for this complaint from PrevExperience table
-            $exp_sql = "
-                SELECT DISTINCT 
-                    s.fname + ' ' + s.lname as doctor_name,
-                    d.position,
-                    sp.speciality,
-                    pe.establishment,
-                    pe.position as prev_position,
-                    pe.from_date,
-                    pe.to_date
-                FROM Treatment t
-                INNER JOIN Complaint c ON t.p_id = c.p_id AND c.c_code = ?
-                INNER JOIN Doctor d ON t.d_id = d.d_id
-                INNER JOIN Staff s ON d.d_id = s.st_id
-                LEFT JOIN Consultant cons ON d.d_id = cons.c_id
-                LEFT JOIN Speciality sp ON cons.sp_id = sp.sp_id
-                LEFT JOIN PrevExperience pe ON d.d_id = pe.d_id
-                WHERE c.c_code = ?
-                ORDER BY s.fname, pe.from_date DESC
-            ";
-            $exp_stmt = sqlsrv_query($conn, $exp_sql, $params);
-            $doctors_list = [];
-            if ($exp_stmt) {
-                while ($row = sqlsrv_fetch_array($exp_stmt, SQLSRV_FETCH_ASSOC)) {
-                    $doctors_list[] = $row;
-                }
-            }
-            
-            echo json_encode(['success' => true, 'treatments' => $treatments, 'doctors' => $doctors_list]);
-            exit;
-        }
+// Get all doctors for performance search
+$doctors_sql = "SELECT d.d_id, s.fname, s.lname, d.position 
+                FROM Doctor d 
+                JOIN Staff s ON d.d_id = s.st_id 
+                ORDER BY s.lname";
+$doctors_stmt = sqlsrv_query($conn, $doctors_sql);
+$doctors_list = [];
+if ($doctors_stmt) {
+    while ($row = sqlsrv_fetch_array($doctors_stmt, SQLSRV_FETCH_ASSOC)) {
+        $doctors_list[] = $row;
     }
-    
-    if ($action === 'get_treatments_by_date_range') {
-        $complaint_code = $_POST['complaint_code'] ?? '';
-        $start_date = $_POST['start_date'] ?? '';
-        $end_date = $_POST['end_date'] ?? '';
-        
-        $sql = "
-            SELECT 
-                t.t_code,
-                t.startdate as treatment_start_date,
-                t.enddate as treatment_end_date,
-                s.fname + ' ' + s.lname as doctor_name,
-                p.fname + ' ' + p.lname as patient_name,
-                c.title as complaint_title
-            FROM Treatment t
-            INNER JOIN Complaint c ON t.p_id = c.p_id
-            INNER JOIN Doctor d ON t.d_id = d.d_id
-            INNER JOIN Staff s ON d.d_id = s.st_id
-            INNER JOIN Patient p ON t.p_id = p.p_id
-            WHERE 1=1
-        ";
-        $params = [];
-        
-        if ($complaint_code) {
-            $sql .= " AND c.c_code = ?";
-            $params[] = $complaint_code;
-        }
-        
-        if ($start_date) {
-            $sql .= " AND CAST(t.startdate AS DATE) >= ?";
-            $params[] = $start_date;
-        }
-        
-        if ($end_date) {
-            $sql .= " AND CAST(t.startdate AS DATE) <= ?";
-            $params[] = $end_date;
-        }
-        
-        $sql .= " ORDER BY t.t_code, t.startdate DESC";
-        
-        $stmt = sqlsrv_query($conn, $sql, $params);
-        
-        $treatments = [];
-        if ($stmt) {
-            while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
-                $treatments[] = $row;
-            }
-        }
-        
-        echo json_encode(['success' => true, 'treatments' => $treatments]);
-        exit;
-    }
-    
-    if ($action === 'get_doctor_performance') {
-        $doctor_id = $_POST['doctor_id'] ?? '';
-        
-        if ($doctor_id) {
-            // Query #9: A performance history for a particular doctor using Progress table
-            $perf_sql = "
-                SELECT 
-                    pr.date_grade as review_date,
-                    pr.performance as performance_grade,
-                    p.fname + ' ' + p.lname as patient_name
-                FROM Progress pr
-                INNER JOIN Patient p ON pr.p_id = p.p_id
-                WHERE pr.c_id = ?
-                ORDER BY pr.date_grade DESC
-            ";
-            $perf_stmt = sqlsrv_query($conn, $perf_sql, [$doctor_id]);
-            $performance = [];
-            if ($perf_stmt) {
-                while ($row = sqlsrv_fetch_array($perf_stmt, SQLSRV_FETCH_ASSOC)) {
-                    $performance[] = $row;
-                }
-            }
-            
-            // Get experience history from PrevExperience table
-            $exp_sql = "
-                SELECT 
-                    from_date,
-                    to_date,
-                    position,
-                    establishment
-                FROM PrevExperience
-                WHERE d_id = ?
-                ORDER BY from_date DESC
-            ";
-            $exp_stmt = sqlsrv_query($conn, $exp_sql, [$doctor_id]);
-            $experience = [];
-            if ($exp_stmt) {
-                while ($row = sqlsrv_fetch_array($exp_stmt, SQLSRV_FETCH_ASSOC)) {
-                    $experience[] = $row;
-                }
-            }
-            
-            echo json_encode(['success' => true, 'performance' => $performance, 'experience' => $experience]);
-            exit;
-        }
-    }
-    
-    if ($action === 'get_patient_details') {
-        $patient_id = $_POST['patient_id'] ?? '';
-        
-        if ($patient_id) {
-            // Query #10: Full medical details for a particular patient
-            $patient_sql = "
-                SELECT 
-                    p.p_id,
-                    p.fname,
-                    p.lname,
-                    p.dob,
-                    p.admission_date,
-                    p.discharge_date,
-                    p.telno,
-                    p.address,
-                    p.bed_no,
-                    w.name as ward_name
-                FROM Patient p
-                LEFT JOIN Ward w ON p.w_id = w.w_id
-                WHERE p.p_id = ?
-            ";
-            $patient_stmt = sqlsrv_query($conn, $patient_sql, [$patient_id]);
-            $patient = $patient_stmt ? sqlsrv_fetch_array($patient_stmt, SQLSRV_FETCH_ASSOC) : null;
-            
-            // Get complaints and treatments
-            $complaint_sql = "
-                SELECT 
-                    c.title as complaint_title,
-                    c.description as complaint_description,
-                    t.t_code,
-                    t.startdate as treatment_start_date,
-                    t.enddate as treatment_end_date,
-                    s.fname + ' ' + s.lname as doctor_name,
-                    d.position as doctor_position
-                FROM Complaint c
-                LEFT JOIN Treatment t ON c.p_id = t.p_id
-                LEFT JOIN Doctor d ON t.d_id = d.d_id
-                LEFT JOIN Staff s ON d.d_id = s.st_id
-                WHERE c.p_id = ?
-                ORDER BY t.startdate DESC
-            ";
-            $complaint_stmt = sqlsrv_query($conn, $complaint_sql, [$patient_id]);
-            $complaints_patient = [];
-            if ($complaint_stmt) {
-                while ($row = sqlsrv_fetch_array($complaint_stmt, SQLSRV_FETCH_ASSOC)) {
-                    $complaints_patient[] = $row;
-                }
-            }
-            
-            echo json_encode(['success' => true, 'patient' => $patient, 'complaints' => $complaints_patient]);
-            exit;
-        }
-    }
-    
-    if ($action === 'search_patients') {
-        $search = $_POST['search'] ?? '';
-        $sql = "
-            SELECT TOP 10 
-                p.p_id,
-                p.fname + ' ' + p.lname as patient_name,
-                p.admission_date,
-                w.name as ward_name
-            FROM Patient p
-            LEFT JOIN Ward w ON p.w_id = w.w_id
-            WHERE p.fname + ' ' + p.lname LIKE ?
-            ORDER BY p.admission_date DESC
-        ";
-        $params = ["%$search%"];
-        $stmt = sqlsrv_query($conn, $sql, $params);
-        $patients = [];
-        if ($stmt) {
-            while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
-                $patients[] = $row;
-            }
-        }
-        echo json_encode(['success' => true, 'patients' => $patients]);
-        exit;
-    }
-    
-    echo json_encode(['success' => false, 'error' => 'Invalid action']);
-    exit;
 }
 
-// Initial data for performance tab - get doctor list for dropdown
-$doctor_list = [];
-foreach ($doctors as $doc) {
-    $doctor_list[] = [
-        'id' => $doc['d_id'],
-        'name' => 'Dr. ' . $doc['fname'] . ' ' . $doc['lname'],
-        'specialty' => $doc['speciality'] ?? 'General',
-        'position' => $doc['position'] ?? 'Doctor'
+// Handle GET parameters
+$selected_complaint = isset($_GET['complaint_id']) ? intval($_GET['complaint_id']) : 0;
+$date_from = isset($_GET['date_from']) ? $_GET['date_from'] : '';
+$date_to = isset($_GET['date_to']) ? $_GET['date_to'] : '';
+$doctor_search = isset($_GET['doctor_search']) ? intval($_GET['doctor_search']) : 0;
+
+// ============================================
+// QUERY #6: For a selected complaint, show:
+// - The complaint details
+// - All patients who have this complaint
+// - Treatments given to those patients (for that specific complaint)
+// - The doctor who treated them and their experience
+// ============================================
+$complaint_data = null;
+$complaint_patients = [];
+
+if ($selected_complaint > 0 && $active_tab == 'complaint_view') {
+    // First, get the complaint details
+    $complaint_detail_sql = "SELECT c_code, title, description FROM Complaint WHERE c_code = ?";
+    $detail_stmt = sqlsrv_query($conn, $complaint_detail_sql, [$selected_complaint]);
+    if ($detail_stmt) {
+        $complaint_data = sqlsrv_fetch_array($detail_stmt, SQLSRV_FETCH_ASSOC);
+    }
+    
+    // Now get all patients with this complaint, their treatments, and doctor experience
+    $query6_sql = "
+        SELECT 
+            c.c_code,
+            c.title AS complaint_title,
+            c.description AS complaint_desc,
+            p.p_id,
+            p.fname AS patient_fname,
+            p.lname AS patient_lname,
+            t.t_code,
+            t.startdate,
+            t.enddate,
+            d.d_id,
+            s.fname AS doctor_fname,
+            s.lname AS doctor_lname,
+            d.position AS doctor_current_position,
+            STUFF((
+                SELECT ' | ' + pe.establishment + ' (' + pe.position + ', ' + 
+                    CONVERT(VARCHAR(10), pe.from_date, 120) + ' to ' + 
+                    ISNULL(CONVERT(VARCHAR(10), pe.to_date, 120), 'Present') + ')'
+                FROM PrevExperience pe
+                WHERE pe.d_id = d.d_id
+                FOR XML PATH(''), TYPE
+            ).value('.', 'NVARCHAR(MAX)'), 1, 3, '') AS experience_history
+        FROM Complaint c
+        INNER JOIN PatientRecord pr ON c.c_code = pr.c_code
+        INNER JOIN Patient p ON pr.p_id = p.p_id
+        INNER JOIN Doctor d ON pr.d_id = d.d_id
+        INNER JOIN Staff s ON d.d_id = s.st_id
+        LEFT JOIN Treatment t ON t.p_id = p.p_id AND t.d_id = d.d_id
+        WHERE c.c_code = ?
+        ORDER BY p.p_id, t.startdate DESC
+    ";
+    
+    $query6_stmt = sqlsrv_query($conn, $query6_sql, [$selected_complaint]);
+    if ($query6_stmt) {
+        while ($row = sqlsrv_fetch_array($query6_stmt, SQLSRV_FETCH_ASSOC)) {
+            if ($row['startdate'] instanceof DateTime) {
+                $row['startdate'] = $row['startdate']->format('Y-m-d');
+            }
+            if ($row['enddate'] instanceof DateTime) {
+                $row['enddate'] = $row['enddate']->format('Y-m-d');
+            }
+            $complaint_patients[] = $row;
+        }
+    }
+}
+
+// ============================================
+// QUERY #11: Treatments for a complaint between two dates
+// ============================================
+$date_range_treatments = [];
+if ($selected_complaint > 0 && $date_from && $date_to && $active_tab == 'date_range') {
+    $query11_sql = "
+        SELECT 
+            t.t_code,
+            t.startdate,
+            t.enddate,
+            p.p_id,
+            CONCAT(p.fname, ' ', p.lname) AS patient_name,
+            CONCAT(s.fname, ' ', s.lname) AS doctor_name,
+            d.position AS doctor_position,
+            c.title AS complaint_title,
+            DATEDIFF(DAY, t.startdate, ISNULL(t.enddate, GETDATE())) AS treatment_duration
+        FROM Complaint c
+        INNER JOIN PatientRecord pr ON c.c_code = pr.c_code
+        INNER JOIN Patient p ON pr.p_id = p.p_id
+        INNER JOIN Doctor d ON pr.d_id = d.d_id
+        INNER JOIN Staff s ON d.d_id = s.st_id
+        LEFT JOIN Treatment t ON t.p_id = p.p_id AND t.d_id = d.d_id
+        WHERE c.c_code = ? 
+            AND (t.startdate >= CAST(? AS DATE) OR t.startdate IS NULL)
+            AND (t.startdate <= CAST(? AS DATE) OR t.startdate IS NULL)
+        ORDER BY t.startdate
+    ";
+    $query11_stmt = sqlsrv_query($conn, $query11_sql, [$selected_complaint, $date_from, $date_to]);
+    if ($query11_stmt) {
+        while ($row = sqlsrv_fetch_array($query11_stmt, SQLSRV_FETCH_ASSOC)) {
+            if ($row['startdate'] instanceof DateTime) {
+                $row['startdate'] = $row['startdate']->format('Y-m-d');
+            }
+            if ($row['enddate'] instanceof DateTime) {
+                $row['enddate'] = $row['enddate']->format('Y-m-d');
+            }
+            $date_range_treatments[] = $row;
+        }
+    }
+}
+
+// ============================================
+// QUERY #9: Performance history for a particular doctor
+// ============================================
+$doctor_performance = null;
+if ($doctor_search > 0 && $active_tab == 'performance') {
+    // Doctor's basic info
+    $doctor_info_sql = "
+        SELECT 
+            d.d_id,
+            CONCAT(s.fname, ' ', s.lname) AS doctor_name,
+            d.position AS current_position
+        FROM Doctor d
+        JOIN Staff s ON d.d_id = s.st_id
+        WHERE d.d_id = ?
+    ";
+    $info_stmt = sqlsrv_query($conn, $doctor_info_sql, [$doctor_search]);
+    $doctor_info = sqlsrv_fetch_array($info_stmt, SQLSRV_FETCH_ASSOC);
+    
+    // Doctor's experience at each position
+    $doctor_experience_sql = "
+        SELECT 
+            establishment,
+            position AS previous_position,
+            from_date,
+            to_date,
+            DATEDIFF(YEAR, from_date, ISNULL(to_date, GETDATE())) AS years_in_position
+        FROM PrevExperience
+        WHERE d_id = ?
+        ORDER BY from_date DESC
+    ";
+    $exp_stmt = sqlsrv_query($conn, $doctor_experience_sql, [$doctor_search]);
+    $doctor_experience = [];
+    if ($exp_stmt) {
+        while ($row = sqlsrv_fetch_array($exp_stmt, SQLSRV_FETCH_ASSOC)) {
+            if ($row['from_date'] instanceof DateTime) {
+                $row['from_date'] = $row['from_date']->format('Y-m-d');
+            }
+            if ($row['to_date'] instanceof DateTime) {
+                $row['to_date'] = $row['to_date']->format('Y-m-d');
+            }
+            $doctor_experience[] = $row;
+        }
+    }
+    
+    // Doctor's patients and treatment outcomes - join through PatientRecord
+    $doctor_patients_sql = "
+        SELECT DISTINCT
+            p.p_id,
+            CONCAT(p.fname, ' ', p.lname) AS patient_name,
+            c.title AS complaint_title,
+            c.c_code,
+            t.t_code,
+            t.startdate,
+            t.enddate,
+            CASE 
+                WHEN t.enddate IS NOT NULL AND t.enddate <= GETDATE() THEN 'Completed'
+                WHEN t.enddate IS NULL AND t.startdate <= GETDATE() THEN 'Ongoing'
+                WHEN t.startdate IS NULL THEN 'No Treatment'
+                ELSE 'Scheduled'
+            END AS treatment_status
+        FROM Doctor d
+        INNER JOIN PatientRecord pr ON d.d_id = pr.d_id
+        INNER JOIN Patient p ON pr.p_id = p.p_id
+        INNER JOIN Complaint c ON pr.c_code = c.c_code
+        LEFT JOIN Treatment t ON t.p_id = p.p_id AND t.d_id = d.d_id
+        WHERE d.d_id = ?
+        ORDER BY p.p_id, t.startdate DESC
+    ";
+    $patients_stmt = sqlsrv_query($conn, $doctor_patients_sql, [$doctor_search]);
+    $doctor_patients = [];
+    if ($patients_stmt) {
+        while ($row = sqlsrv_fetch_array($patients_stmt, SQLSRV_FETCH_ASSOC)) {
+            if ($row['startdate'] instanceof DateTime) {
+                $row['startdate'] = $row['startdate']->format('Y-m-d');
+            }
+            if ($row['enddate'] instanceof DateTime) {
+                $row['enddate'] = $row['enddate']->format('Y-m-d');
+            }
+            $doctor_patients[] = $row;
+        }
+    }
+    
+    $total_patients = count($doctor_patients);
+    $completed_treatments = count(array_filter($doctor_patients, function($p) { return $p['treatment_status'] == 'Completed'; }));
+    $ongoing_treatments = count(array_filter($doctor_patients, function($p) { return $p['treatment_status'] == 'Ongoing'; }));
+    
+    $doctor_performance = [
+        'info' => $doctor_info,
+        'experience' => $doctor_experience,
+        'patients' => $doctor_patients,
+        'total_patients' => $total_patients,
+        'completed_treatments' => $completed_treatments,
+        'ongoing_treatments' => $ongoing_treatments
     ];
 }
 ?>
 
-<style>
-    /* Clinical Records Page Styles */
-    .clinical-records-container {
-        max-width: 1400px;
-        margin: 0 auto;
-    }
-    
-    .clinical-tabs {
-        background: white;
-        border-radius: 60px;
-        padding: 6px;
-        margin-bottom: 32px;
-        display: inline-flex;
-        gap: 8px;
-        box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
-    }
-    
-    .clinical-tab {
-        display: inline-flex;
-        align-items: center;
-        gap: 10px;
-        padding: 12px 28px;
-        border-radius: 50px;
-        font-size: 0.95rem;
-        font-weight: 500;
-        color: #4A5568;
-        text-decoration: none;
-        transition: all 0.3s ease;
-        background: transparent;
-        border: none;
-        cursor: pointer;
-        font-family: 'Inter', sans-serif;
-    }
-    
-    .clinical-tab .material-icons {
-        font-size: 20px;
-    }
-    
-    .clinical-tab:hover {
-        background: rgba(30, 58, 95, 0.08);
-        color: #1E3A5F;
-    }
-    
-    .clinical-tab.active {
-        background: linear-gradient(135deg, #1E3A5F 0%, #2C527A 100%);
-        color: white;
-        box-shadow: 0 4px 12px rgba(30, 58, 95, 0.25);
-    }
-    
-    .clinical-subtabs {
-        background: #F1F5F9;
-        border-radius: 40px;
-        padding: 4px;
-        display: inline-flex;
-        gap: 4px;
-        margin-bottom: 28px;
-    }
-    
-    .clinical-subtab {
-        padding: 8px 24px;
-        border-radius: 36px;
-        font-size: 0.85rem;
-        font-weight: 500;
-        color: #4A5568;
-        background: transparent;
-        border: none;
-        cursor: pointer;
-        transition: all 0.2s;
-        font-family: 'Inter', sans-serif;
-    }
-    
-    .clinical-subtab:hover {
-        background: rgba(30, 58, 95, 0.1);
-    }
-    
-    /* Updated active style for subtabs - matches main tabs but smaller */
-    .clinical-subtab.active {
-        background: linear-gradient(135deg, #1E3A5F 0%, #2C527A 100%);
-        color: white;
-        box-shadow: 0 2px 8px rgba(30, 58, 95, 0.25);
-    }
-    
-    .filter-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-        gap: 20px;
-        margin-bottom: 28px;
-    }
-    
-    .filter-group {
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-    }
-    
-    .filter-group label {
-        font-size: 0.75rem;
-        font-weight: 600;
-        color: #4A5568;
-        letter-spacing: 0.3px;
-    }
-    
-    .filter-group select,
-    .filter-group input {
-        padding: 12px 16px;
-        border: 1.5px solid #E2E8F0;
-        border-radius: 12px;
-        font-size: 0.9rem;
-        font-family: 'Inter', sans-serif;
-        transition: all 0.2s;
-        background: white;
-    }
-    
-    .filter-group select:focus,
-    .filter-group input:focus {
-        outline: none;
-        border-color: #2C527A;
-        box-shadow: 0 0 0 3px rgba(44, 82, 122, 0.1);
-    }
-    
-    .date-input-group {
-        position: relative;
-    }
-    
-    .date-input-group .material-icons {
-        position: absolute;
-        left: 14px;
-        top: 50%;
-        transform: translateY(-50%);
-        color: #A0AEC0;
-        font-size: 18px;
-        pointer-events: none;
-    }
-    
-    .date-input-group input {
-        padding-left: 42px;
-        width: 100%;
-    }
-    
-    .results-card {
-        background: white;
-        border-radius: 20px;
-        padding: 24px;
-        margin-top: 24px;
-        box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
-    }
-    
-    .treatment-item,
-    .performance-item {
-        padding: 20px;
-        border: 1px solid #E8ECF0;
-        border-radius: 16px;
-        margin-bottom: 16px;
-        transition: all 0.2s;
-        background: white;
-    }
-    
-    .treatment-item:hover,
-    .performance-item:hover {
-        border-color: #2C527A;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
-    }
-    
-    .doctor-card {
-        background: linear-gradient(135deg, #F8FAFC 0%, #F1F5F9 100%);
-        border-radius: 20px;
-        padding: 24px;
-        margin-bottom: 28px;
-        border: 1px solid #E2E8F0;
-    }
-    
-    .doctor-avatar {
-        width: 64px;
-        height: 64px;
-        border-radius: 32px;
-        background: linear-gradient(135deg, #1E3A5F 0%, #2C527A 100%);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        color: white;
-        font-size: 28px;
-        font-weight: 600;
-    }
-    
-    .grade-badge {
-        display: inline-block;
-        padding: 4px 12px;
-        border-radius: 20px;
-        font-size: 0.75rem;
-        font-weight: 600;
-    }
-    
-    .grade-Excellent { background: #C6F6D5; color: #22543D; }
-    .grade-Good { background: #BEE3F8; color: #2C5282; }
-    .grade-Satisfactory { background: #FEEBC8; color: #7B341E; }
-    .grade-Needs-Improvement { background: #FED7D7; color: #742A2A; }
-    
-    .loading-spinner {
-        display: inline-block;
-        width: 20px;
-        height: 20px;
-        border: 2px solid #E2E8F0;
-        border-top-color: #1E3A5F;
-        border-radius: 50%;
-        animation: spin 0.6s linear infinite;
-    }
-    
-    @keyframes spin {
-        to { transform: rotate(360deg); }
-    }
-    
-    .empty-state {
-        text-align: center;
-        padding: 60px 20px;
-        background: #F8FAFC;
-        border-radius: 20px;
-    }
-    
-    .empty-state .material-icons {
-        font-size: 64px;
-        color: #A0AEC0;
-        margin-bottom: 16px;
-    }
-    
-    .search-doctor-input {
-        position: relative;
-        margin-bottom: 24px;
-    }
-    
-    .search-doctor-input input {
-        width: 100%;
-        padding: 14px 20px;
-        border: 1.5px solid #E2E8F0;
-        border-radius: 50px;
-        font-size: 0.9rem;
-        font-family: 'Inter', sans-serif;
-        padding-left: 48px;
-    }
-    
-    .search-doctor-input .material-icons {
-        position: absolute;
-        left: 18px;
-        top: 50%;
-        transform: translateY(-50%);
-        color: #A0AEC0;
-    }
-    
-    .doctor-suggestions {
-        position: absolute;
-        top: 100%;
-        left: 0;
-        right: 0;
-        background: white;
-        border: 1px solid #E2E8F0;
-        border-radius: 16px;
-        margin-top: 8px;
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
-        z-index: 100;
-        max-height: 300px;
-        overflow-y: auto;
-    }
-    
-    .doctor-suggestion-item {
-        padding: 12px 20px;
-        cursor: pointer;
-        transition: background 0.2s;
-        border-bottom: 1px solid #F1F5F9;
-    }
-    
-    .doctor-suggestion-item:hover {
-        background: #F8FAFC;
-    }
-    
-    .doctor-suggestion-name {
-        font-weight: 600;
-        color: #1A2B3C;
-        margin-bottom: 4px;
-    }
-    
-    .doctor-suggestion-specialty {
-        font-size: 0.75rem;
-        color: #6B7E92;
-    }
-    
-    .btn-primary {
-        background: linear-gradient(135deg, #1E3A5F 0%, #2C527A 100%);
-        color: white;
-        border: none;
-        padding: 10px 24px;
-        border-radius: 40px;
-        font-size: 0.9rem;
-        font-weight: 600;
-        cursor: pointer;
-        transition: all 0.2s;
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        font-family: 'Inter', sans-serif;
-    }
-    
-    .btn-primary:hover {
-        transform: translateY(-1px);
-        box-shadow: 0 6px 16px rgba(30, 58, 95, 0.25);
-    }
-    
-    .btn-secondary {
-        background: #F1F5F9;
-        color: #4A5568;
-        border: 1px solid #E2E8F0;
-        padding: 10px 24px;
-        border-radius: 40px;
-        font-size: 0.9rem;
-        font-weight: 500;
-        cursor: pointer;
-        transition: all 0.2s;
-        font-family: 'Inter', sans-serif;
-    }
-    
-    .btn-secondary:hover {
-        background: #E2E8F0;
-    }
-    
-    /* Debug info styling */
-    .debug-info {
-        background: #FEF3C7;
-        border-left: 4px solid #F59E0B;
-        padding: 12px 16px;
-        margin-bottom: 20px;
-        border-radius: 8px;
-        font-size: 0.85rem;
-        color: #92400E;
-    }
-    
-    @media (max-width: 768px) {
-        .clinical-tab span:last-child {
-            display: none;
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Clinical Records | IPMH</title>
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+    <style>
+        /* Clinical Records Page Styles */
+        .clinical-records-container {
+            max-width: 1400px;
+            margin: 0 auto;
         }
+        
+        .page-header {
+            margin-bottom: 32px;
+        }
+        
+        .page-title {
+            font-size: 2rem;
+            font-weight: 700;
+            color: #1E3A5F;
+            margin-bottom: 8px;
+        }
+        
+        .page-subtitle {
+            font-size: 1rem;
+            color: #2D3748;
+            opacity: 0.6;
+        }
+        
+        .clinical-tabs {
+            background: white;
+            border-radius: 60px;
+            padding: 6px;
+            margin-bottom: 32px;
+            display: inline-flex;
+            gap: 8px;
+            box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
+        }
+        
         .clinical-tab {
-            padding: 12px 20px;
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 28px;
+            border-radius: 50px;
+            font-size: 0.95rem;
+            font-weight: 500;
+            color: #4A5568;
+            text-decoration: none;
+            transition: all 0.3s ease;
+            background: transparent;
+            border: none;
+            cursor: pointer;
+            font-family: 'Inter', sans-serif;
         }
+        
+        .clinical-tab .material-icons {
+            font-size: 20px;
+        }
+        
+        .clinical-tab:hover {
+            background: rgba(30, 58, 95, 0.08);
+            color: #1E3A5F;
+        }
+        
+        .clinical-tab.active {
+            background: linear-gradient(135deg, #1E3A5F 0%, #2C527A 100%);
+            color: white;
+            box-shadow: 0 4px 12px rgba(30, 58, 95, 0.25);
+        }
+        
+        .clinical-subtabs {
+            background: #F1F5F9;
+            border-radius: 40px;
+            padding: 4px;
+            display: inline-flex;
+            gap: 4px;
+            margin-bottom: 28px;
+        }
+        
+        .clinical-subtab {
+            padding: 8px 24px;
+            border-radius: 36px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            color: #4A5568;
+            background: transparent;
+            border: none;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-family: 'Inter', sans-serif;
+        }
+        
+        .clinical-subtab:hover {
+            background: rgba(30, 58, 95, 0.1);
+        }
+        
+        .clinical-subtab.active {
+            background: linear-gradient(135deg, #1E3A5F 0%, #2C527A 100%);
+            color: white;
+            box-shadow: 0 2px 8px rgba(30, 58, 95, 0.25);
+        }
+        
         .filter-grid {
-            grid-template-columns: 1fr;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 28px;
         }
-    }
-</style>
+        
+        .filter-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        
+        .filter-group label {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: #4A5568;
+            letter-spacing: 0.3px;
+        }
+        
+        .filter-group select,
+        .filter-group input {
+            padding: 12px 16px;
+            border: 1.5px solid #E2E8F0;
+            border-radius: 12px;
+            font-size: 0.9rem;
+            font-family: 'Inter', sans-serif;
+            transition: all 0.2s;
+            background: white;
+        }
+        
+        .filter-group select:focus,
+        .filter-group input:focus {
+            outline: none;
+            border-color: #2C527A;
+            box-shadow: 0 0 0 3px rgba(44, 82, 122, 0.1);
+        }
+        
+        .date-input-group {
+            position: relative;
+        }
+        
+        .date-input-group .material-icons {
+            position: absolute;
+            left: 14px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #A0AEC0;
+            font-size: 18px;
+            pointer-events: none;
+        }
+        
+        .date-input-group input {
+            padding-left: 42px;
+            width: 100%;
+        }
+        
+        .results-card {
+            background: white;
+            border-radius: 20px;
+            padding: 24px;
+            margin-top: 24px;
+            box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
+        }
+        
+        .treatment-item,
+        .performance-item {
+            padding: 20px;
+            border: 1px solid #E8ECF0;
+            border-radius: 16px;
+            margin-bottom: 16px;
+            transition: all 0.2s;
+            background: white;
+        }
+        
+        .treatment-item:hover,
+        .performance-item:hover {
+            border-color: #2C527A;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+        }
+        
+        .doctor-card {
+            background: linear-gradient(135deg, #F8FAFC 0%, #F1F5F9 100%);
+            border-radius: 20px;
+            padding: 24px;
+            margin-bottom: 28px;
+            border: 1px solid #E2E8F0;
+        }
+        
+        .doctor-avatar {
+            width: 64px;
+            height: 64px;
+            border-radius: 32px;
+            background: linear-gradient(135deg, #1E3A5F 0%, #2C527A 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 28px;
+            font-weight: 600;
+        }
+        
+        .grade-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        
+        .grade-Excellent { background: #C6F6D5; color: #22543D; }
+        .grade-Good { background: #BEE3F8; color: #2C5282; }
+        .grade-Satisfactory { background: #FEEBC8; color: #7B341E; }
+        .grade-Needs-Improvement { background: #FED7D7; color: #742A2A; }
+        
+        .status-completed {
+            background: #C6F6D5;
+            color: #22543D;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            display: inline-block;
+        }
+        
+        .status-ongoing {
+            background: #FEF3C7;
+            color: #92400E;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            display: inline-block;
+        }
+        
+        .status-no-treatment {
+            background: #E2E8F0;
+            color: #4A5568;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            display: inline-block;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #1E3A5F 0%, #2C527A 100%);
+            color: white;
+            border: none;
+            padding: 10px 24px;
+            border-radius: 40px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-family: 'Inter', sans-serif;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 16px rgba(30, 58, 95, 0.25);
+        }
+        
+        .btn-secondary {
+            background: #F1F5F9;
+            color: #4A5568;
+            border: 1px solid #E2E8F0;
+            padding: 10px 24px;
+            border-radius: 40px;
+            font-size: 0.9rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-family: 'Inter', sans-serif;
+        }
+        
+        .btn-secondary:hover {
+            background: #E2E8F0;
+        }
+        
+        .search-doctor-input {
+            position: relative;
+            margin-bottom: 24px;
+        }
+        
+        .search-doctor-input input {
+            width: 100%;
+            padding: 14px 20px;
+            border: 1.5px solid #E2E8F0;
+            border-radius: 50px;
+            font-size: 0.9rem;
+            font-family: 'Inter', sans-serif;
+            padding-left: 48px;
+        }
+        
+        .search-doctor-input .material-icons {
+            position: absolute;
+            left: 18px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #A0AEC0;
+        }
+        
+        .doctor-suggestions {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background: white;
+            border: 1px solid #E2E8F0;
+            border-radius: 16px;
+            margin-top: 8px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+            z-index: 100;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        
+        .doctor-suggestion-item {
+            padding: 12px 20px;
+            cursor: pointer;
+            transition: background 0.2s;
+            border-bottom: 1px solid #F1F5F9;
+        }
+        
+        .doctor-suggestion-item:hover {
+            background: #F8FAFC;
+        }
+        
+        .doctor-suggestion-name {
+            font-weight: 600;
+            color: #1A2B3C;
+            margin-bottom: 4px;
+        }
+        
+        .doctor-suggestion-specialty {
+            font-size: 0.75rem;
+            color: #6B7E92;
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            background: #F8FAFC;
+            border-radius: 20px;
+        }
+        
+        .empty-state .material-icons {
+            font-size: 64px;
+            color: #A0AEC0;
+            margin-bottom: 16px;
+        }
+        
+        .complaint-preview {
+            background: #F8FAFC;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 20px;
+        }
+        
+        .complaint-preview h4 {
+            color: #1E3A5F;
+            margin-bottom: 8px;
+        }
+        
+        .complaint-preview p {
+            color: #4A5568;
+            font-size: 0.85rem;
+        }
+        
+        .experience-text {
+            background: #F8FAFC;
+            padding: 12px;
+            border-radius: 8px;
+            font-size: 0.8rem;
+            line-height: 1.5;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        
+        .stat-card {
+            background: linear-gradient(135deg, #F8FAFC 0%, #FFFFFF 100%);
+            border: 1px solid #E2E8F0;
+            border-radius: 12px;
+            padding: 16px;
+            text-align: center;
+        }
+        
+        .stat-number {
+            font-size: 2rem;
+            font-weight: 700;
+            color: #1E3A5F;
+        }
+        
+        .stat-label {
+            font-size: 0.75rem;
+            color: #718096;
+            margin-top: 4px;
+        }
+        
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        .data-table th {
+            text-align: left;
+            padding: 12px 16px;
+            background: #F8FAFC;
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: #4A5568;
+            border-bottom: 1px solid #E2E8F0;
+        }
+        
+        .data-table td {
+            padding: 12px 16px;
+            font-size: 0.85rem;
+            color: #2D3748;
+            border-bottom: 1px solid #F0F2F5;
+        }
+        
+        .data-table tr:hover td {
+            background: #F8FAFC;
+        }
+        
+        .experience-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 12px 0;
+            border-bottom: 1px solid #E2E8F0;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        
+        .experience-establishment {
+            font-weight: 600;
+            color: #1E3A5F;
+        }
+        
+        .experience-date {
+            font-size: 0.7rem;
+            color: #718096;
+        }
+        
+        @media (max-width: 768px) {
+            .filter-grid {
+                grid-template-columns: 1fr;
+            }
+            .clinical-tab span:last-child {
+                display: none;
+            }
+            .clinical-tab {
+                padding: 12px 20px;
+            }
+        }
+    </style>
+</head>
+<body>
 
 <div class="clinical-records-container">
     <!-- PAGE HEADER -->
     <div class="page-header">
         <h1 class="page-title">Clinical Records</h1>
-        <p class="page-subtitle">View and manage patient complaints, treatments, and medical history</p>
+        <p class="page-subtitle">View complaints, treatments, doctor experiences, and performance history</p>
     </div>
-    
-    <!-- DEBUG: Show complaint count if empty -->
-    <?php if (empty($complaints)): ?>
-    <div class="debug-info">
-        <strong>⚠️ Debug Info:</strong> No complaints found in database. 
-        Please check that the Complaint table has data. Run the insert_tables.sql file again.
-    </div>
-    <?php endif; ?>
     
     <!-- Main Tabs -->
     <div class="clinical-tabs">
-        <button class="clinical-tab active" data-tab="complaints">
+        <a href="?page=clinical_records&tab=complaint_view" class="clinical-tab <?php echo $active_tab == 'complaint_view' ? 'active' : ''; ?>">
             <span class="material-icons">medical_services</span>
             <span>Complaints & Treatments</span>
-        </button>
-        <button class="clinical-tab" data-tab="performance">
+        </a>
+        <a href="?page=clinical_records&tab=performance" class="clinical-tab <?php echo $active_tab == 'performance' ? 'active' : ''; ?>">
             <span class="material-icons">trending_up</span>
             <span>Performance & History</span>
-        </button>
+        </a>
     </div>
     
-    <!-- Complaints & Treatments Tab Content -->
-    <div id="complaintsTab" class="tab-content">
+    <!-- ============================================ -->
+    <!-- COMPLAINTS & TREATMENTS TAB -->
+    <!-- ============================================ -->
+    <?php if ($active_tab == 'complaint_view'): ?>
+    <div>
         <div class="results-card">
             <!-- Sub Tabs -->
             <div class="clinical-subtabs">
-                <button class="clinical-subtab active" data-subtab="complaint-view">
-                    Complaint View
-                </button>
-                <button class="clinical-subtab" data-subtab="date-range">
-                    Date Range Filter
-                </button>
+                <a href="?page=clinical_records&tab=complaint_view&subtab=complaint-view" class="clinical-subtab active">Complaint View</a>
+                <a href="?page=clinical_records&tab=date_range" class="clinical-subtab">Date Range Filter</a>
             </div>
             
             <!-- Complaint View Subtab -->
-            <div id="complaintView" class="subtab-content">
+            <div id="complaintView">
                 <div class="filter-group" style="margin-bottom: 24px;">
                     <label>Select Complaint</label>
-                    <select id="complaintSelect">
-                        <option value="">-- Select a Complaint --</option>
-                        <?php foreach ($complaints as $complaint): ?>
-                            <option value="<?php echo htmlspecialchars($complaint['c_code']); ?>">
-                                <?php echo htmlspecialchars($complaint['title']); ?>
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-                
-                <div id="complaintResults" style="display: none;">
-                    <div class="filter-grid">
-                        <div>
-                            <h3 style="color: #1E3A5F; margin-bottom: 16px;">Treatments</h3>
-                            <div id="treatmentsList"></div>
-                        </div>
-                        <div>
-                            <h3 style="color: #1E3A5F; margin-bottom: 16px;">Doctor Experience</h3>
-                            <div id="doctorsExperienceList"></div>
-                        </div>
-                    </div>
-                </div>
-                
-                <div id="complaintEmpty" class="empty-state" style="display: none;">
-                    <span class="material-icons">medical_information</span>
-                    <h3>Select a complaint to view treatments</h3>
-                    <p>Choose a complaint from the dropdown above to see associated treatments and doctor experience</p>
-                </div>
-            </div>
-            
-            <!-- Date Range Filter Subtab -->
-            <div id="dateRangeView" class="subtab-content" style="display: none;">
-                <div class="filter-grid">
-                    <div class="filter-group">
-                        <label>Complaint Type</label>
-                        <select id="filterComplaintSelect">
-                            <option value="">All Complaints</option>
-                            <?php foreach ($complaints as $complaint): ?>
-                                <option value="<?php echo htmlspecialchars($complaint['c_code']); ?>">
+                    <form method="GET" action="">
+                        <input type="hidden" name="page" value="clinical_records">
+                        <input type="hidden" name="tab" value="complaint_view">
+                        <select name="complaint_id" onchange="this.form.submit()" style="width: 100%;">
+                            <option value=""> Select a Complaint </option>
+                            <?php foreach ($complaints_list as $complaint): ?>
+                                <option value="<?php echo $complaint['c_code']; ?>" 
+                                    <?php echo $selected_complaint == $complaint['c_code'] ? 'selected' : ''; ?>>
                                     <?php echo htmlspecialchars($complaint['title']); ?>
                                 </option>
                             <?php endforeach; ?>
                         </select>
-                    </div>
-                    <div class="filter-group">
-                        <label>Start Date</label>
-                        <div class="date-input-group">
-                            <span class="material-icons">event</span>
-                            <input type="date" id="startDate">
-                        </div>
-                    </div>
-                    <div class="filter-group">
-                        <label>End Date</label>
-                        <div class="date-input-group">
-                            <span class="material-icons">event</span>
-                            <input type="date" id="endDate">
-                        </div>
-                    </div>
+                    </form>
                 </div>
                 
-                <div style="display: flex; gap: 12px; margin-bottom: 24px;">
-                    <button id="applyFilterBtn" class="btn-primary">Apply Filters</button>
-                    <button id="clearFiltersBtn" class="btn-secondary">Clear Filters</button>
-                </div>
-                
-                <div id="dateRangeResults">
-                    <div id="treatmentsByDateList"></div>
-                </div>
+                <?php if ($selected_complaint > 0 && $complaint_data): ?>
+                    <div class="complaint-preview">
+                        <h4><?php echo htmlspecialchars($complaint_data['title']); ?></h4>
+                        <p><?php echo htmlspecialchars($complaint_data['description'] ?? 'No description available'); ?></p>
+                    </div>
+                    
+                    <?php if (!empty($complaint_patients)): ?>
+                        <h3 style="margin-bottom: 16px; color: #1E3A5F;">
+                            <span class="material-icons" style="vertical-align: middle;">people</span>
+                            Patients with this Complaint & Their Treatments
+                        </h3>
+                        
+                        <?php 
+                        // Group by patient
+                        $patients_grouped = [];
+                        foreach ($complaint_patients as $item) {
+                            $patient_key = $item['p_id'];
+                            if (!isset($patients_grouped[$patient_key])) {
+                                $patients_grouped[$patient_key] = [
+                                    'patient_name' => $item['patient_fname'] . ' ' . $item['patient_lname'],
+                                    'doctors' => []
+                                ];
+                            }
+                            $doctor_key = $item['d_id'];
+                            if (!isset($patients_grouped[$patient_key]['doctors'][$doctor_key])) {
+                                $patients_grouped[$patient_key]['doctors'][$doctor_key] = [
+                                    'doctor_name' => $item['doctor_fname'] . ' ' . $item['doctor_lname'],
+                                    'current_position' => $item['doctor_current_position'],
+                                    'experience_history' => $item['experience_history'],
+                                    'treatments' => []
+                                ];
+                            }
+                            if ($item['t_code']) {
+                                $patients_grouped[$patient_key]['doctors'][$doctor_key]['treatments'][] = $item;
+                            }
+                        }
+                        ?>
+                        
+                        <?php foreach ($patients_grouped as $patient): ?>
+                            <div class="treatment-item">
+                                <div style="font-weight: 600; color: #1E3A5F; margin-bottom: 12px; font-size: 1rem;">
+                                     Patient: <?php echo htmlspecialchars($patient['patient_name']); ?>
+                                </div>
+                                <?php foreach ($patient['doctors'] as $doctor): ?>
+                                    <div style="margin: 16px 0; padding: 12px; background: #F8FAFC; border-radius: 12px;">
+                                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
+                                            <strong style="color: #1E3A5F;">Dr. <?php echo htmlspecialchars($doctor['doctor_name']); ?></strong>
+                                            <span class="grade-badge grade-Good"><?php echo htmlspecialchars($doctor['current_position']); ?></span>
+                                        </div>
+                                        
+                                        <div style="margin-bottom: 12px;">
+                                            <strong>Experience History:</strong>
+                                            <div class="experience-text" style="margin-top: 8px;">
+                                                <?php echo htmlspecialchars($doctor['experience_history'] ?: 'No previous experience records found.'); ?>
+                                            </div>
+                                        </div>
+                                        
+                                        <?php if (!empty($doctor['treatments'])): ?>
+                                            <table class="data-table">
+                                                <thead><tr><th>Treatment Code</th><th>Start Date</th><th>End Date</th></tr></thead>
+                                                <tbody>
+                                                    <?php foreach ($doctor['treatments'] as $treatment): ?>
+                                                        <tr>
+                                                            <td>#<?php echo $treatment['t_code']; ?></td>
+                                                            <td><?php echo $treatment['startdate'] ?? 'N/A'; ?></td>
+                                                            <td><?php echo $treatment['enddate'] ?? 'Ongoing'; ?></td>
+                                                        </tr>
+                                                    <?php endforeach; ?>
+                                                </tbody>
+                                            </table>
+                                        <?php else: ?>
+                                            <p style="color: #718096; font-size: 0.85rem;">No treatment records for this doctor with this complaint.</p>
+                                        <?php endif; ?>
+                                    </div>
+                                <?php endforeach; ?>
+                            </div>
+                        <?php endforeach; ?>
+                        
+                    <?php else: ?>
+                        <div class="empty-state">
+                            <span class="material-icons">search_off</span>
+                            <p>No patients or treatments found for this complaint.</p>
+                        </div>
+                    <?php endif; ?>
+                    
+                <?php elseif ($selected_complaint > 0): ?>
+                    <div class="empty-state">
+                        <span class="material-icons">error_outline</span>
+                        <p>Complaint not found.</p>
+                    </div>
+                <?php else: ?>
+                    <div class="empty-state">
+                        <span class="material-icons">healing</span>
+                        <p>Select a complaint from the dropdown above to view associated patients, treatments, and doctor experience.</p>
+                    </div>
+                <?php endif; ?>
             </div>
         </div>
     </div>
+    <?php endif; ?>
     
-    <!-- Performance & History Tab Content -->
-    <div id="performanceTab" class="tab-content" style="display: none;">
+    <!-- ============================================ -->
+    <!-- DATE RANGE FILTER TAB -->
+    <!-- ============================================ -->
+    <?php if ($active_tab == 'date_range'): ?>
+    <div>
+        <div class="results-card">
+            <div class="clinical-subtabs">
+                <a href="?page=clinical_records&tab=complaint_view" class="clinical-subtab">Complaint View</a>
+                <a href="?page=clinical_records&tab=date_range" class="clinical-subtab active">Date Range Filter</a>
+            </div>
+            
+            <div>
+                <form method="GET" action="">
+                    <input type="hidden" name="page" value="clinical_records">
+                    <input type="hidden" name="tab" value="date_range">
+                    <div class="filter-grid">
+                        <div class="filter-group">
+                            <label>Complaint Type</label>
+                            <select name="complaint_id" required>
+                                <option value=""> Select Complaint </option>
+                                <?php foreach ($complaints_list as $complaint): ?>
+                                    <option value="<?php echo $complaint['c_code']; ?>" <?php echo $selected_complaint == $complaint['c_code'] ? 'selected' : ''; ?>>
+                                        <?php echo htmlspecialchars($complaint['title']); ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div class="filter-group">
+                            <label>Start Date</label>
+                            <div class="date-input-group">
+                                <span class="material-icons">event</span>
+                                <input type="date" name="date_from" value="<?php echo htmlspecialchars($date_from); ?>" required>
+                            </div>
+                        </div>
+                        <div class="filter-group">
+                            <label>End Date</label>
+                            <div class="date-input-group">
+                                <span class="material-icons">event</span>
+                                <input type="date" name="date_to" value="<?php echo htmlspecialchars($date_to); ?>" required>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div style="display: flex; gap: 12px; margin-bottom: 24px;">
+                        <button type="submit" class="btn-primary">Apply Filters</button>
+                        <a href="?page=clinical_records&tab=date_range" class="btn-secondary">Clear Filters</a>
+                    </div>
+                </form>
+                
+                <?php if ($selected_complaint > 0 && $date_from && $date_to): ?>
+                    <?php 
+                    $filtered_treatments = array_filter($date_range_treatments, function($t) {
+                        return $t['t_code'] !== null;
+                    });
+                    ?>
+                    <?php if (!empty($filtered_treatments)): ?>
+                        <div class="stats-grid">
+                            <div class="stat-card"><div class="stat-number"><?php echo count($filtered_treatments); ?></div><div class="stat-label">Treatments Found</div></div>
+                            <div class="stat-card"><div class="stat-number"><?php echo count(array_unique(array_column($filtered_treatments, 'p_id'))); ?></div><div class="stat-label">Patients</div></div>
+                            <div class="stat-card"><div class="stat-number"><?php echo count(array_unique(array_column($filtered_treatments, 'doctor_name'))); ?></div><div class="stat-label">Doctors</div></div>
+                        </div>
+                        
+                        <?php foreach ($filtered_treatments as $treatment): ?>
+                            <div class="treatment-item">
+                                <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 12px;">
+                                    <div>
+                                        <div style="font-weight: 600; color: #1E3A5F; margin-bottom: 8px;">
+                                            Treatment #<?php echo htmlspecialchars($treatment['t_code']); ?>
+                                        </div>
+                                        <div style="font-size: 0.85rem; color: #6B7E92;">
+                                            Patient: <?php echo htmlspecialchars($treatment['patient_name']); ?>
+                                        </div>
+                                        <div style="font-size: 0.85rem; color: #6B7E92;">
+                                            Doctor: Dr. <?php echo htmlspecialchars($treatment['doctor_name']); ?>
+                                        </div>
+                                        <div style="font-size: 0.85rem; color: #6B7E92;">
+                                            Date: <?php echo $treatment['startdate']; ?>
+                                        </div>
+                                    </div>
+                                    <div style="text-align: right;">
+                                        <div class="grade-badge grade-Good" style="margin-bottom: 8px;">
+                                            <?php echo htmlspecialchars($treatment['complaint_title']); ?>
+                                        </div>
+                                        <div style="font-size: 0.75rem; color: #A0AEC0;">
+                                            <?php echo $treatment['enddate'] ? 'Completed: ' . $treatment['enddate'] : 'Ongoing'; ?>
+                                        </div>
+                                        <div style="font-size: 0.75rem; color: #A0AEC0;">
+                                            Duration: <?php echo $treatment['treatment_duration']; ?> days
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        <?php endforeach; ?>
+                    <?php else: ?>
+                        <div class="empty-state">
+                            <span class="material-icons">event_busy</span>
+                            <p>No treatments found for the selected complaint between <?php echo $date_from; ?> and <?php echo $date_to; ?>.</p>
+                        </div>
+                    <?php endif; ?>
+                <?php else: ?>
+                    <div class="empty-state">
+                        <span class="material-icons">date_range</span>
+                        <p>Select a complaint and date range to see treatments applied during that period.</p>
+                    </div>
+                <?php endif; ?>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
+    
+    <!-- ============================================ -->
+    <!-- PERFORMANCE & HISTORY TAB -->
+    <!-- ============================================ -->
+    <?php if ($active_tab == 'performance'): ?>
+    <div>
         <div class="results-card">
             <div class="search-doctor-input">
                 <span class="material-icons">search</span>
-                <input type="text" id="doctorSearchInput" placeholder="Search doctor by name...">
-                <div id="doctorSuggestions" class="doctor-suggestions" style="display: none;"></div>
+                <form method="GET" action="" id="doctorSearchForm">
+                    <input type="hidden" name="page" value="clinical_records">
+                    <input type="hidden" name="tab" value="performance">
+                    <select name="doctor_search" onchange="this.form.submit()" style="width: 100%; padding: 14px 20px; padding-left: 48px; border: 1.5px solid #E2E8F0; border-radius: 50px; font-size: 0.9rem;">
+                        <option value=""> Select a Doctor </option>
+                        <?php foreach ($doctors_list as $doctor): ?>
+                            <option value="<?php echo $doctor['d_id']; ?>" <?php echo $doctor_search == $doctor['d_id'] ? 'selected' : ''; ?>>
+                                Dr. <?php echo htmlspecialchars($doctor['fname'] . ' ' . $doctor['lname']); ?> (<?php echo htmlspecialchars($doctor['position']); ?>)
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </form>
             </div>
             
-            <div id="doctorPerformanceResults" style="display: none;">
-                <div id="doctorInfo" class="doctor-card"></div>
-                <div id="performanceHistory"></div>
-                <div id="experienceHistory" style="margin-top: 32px;"></div>
-            </div>
-            
-            <div id="performanceEmpty" class="empty-state">
-                <span class="material-icons">search</span>
-                <h3>Search for a doctor</h3>
-                <p>Enter a doctor's name above to view their performance history and experience</p>
-            </div>
-        </div>
-    </div>
-</div>
-
-<script>
-// Tab switching
-document.querySelectorAll('.clinical-tab').forEach(tab => {
-    tab.addEventListener('click', () => {
-        const tabId = tab.dataset.tab;
-        
-        // Update active state
-        document.querySelectorAll('.clinical-tab').forEach(t => t.classList.remove('active'));
-        tab.classList.add('active');
-        
-        // Show/hide content
-        document.getElementById('complaintsTab').style.display = tabId === 'complaints' ? 'block' : 'none';
-        document.getElementById('performanceTab').style.display = tabId === 'performance' ? 'block' : 'none';
-    });
-});
-
-// Subtab switching - UPDATED to use blue gradient when active
-document.querySelectorAll('.clinical-subtab').forEach(subtab => {
-    subtab.addEventListener('click', () => {
-        const subtabId = subtab.dataset.subtab;
-        
-        // Update active state on subtabs
-        document.querySelectorAll('.clinical-subtab').forEach(st => st.classList.remove('active'));
-        subtab.classList.add('active');
-        
-        // Show/hide content
-        document.getElementById('complaintView').style.display = subtabId === 'complaint-view' ? 'block' : 'none';
-        document.getElementById('dateRangeView').style.display = subtabId === 'date-range' ? 'block' : 'none';
-    });
-});
-
-// Complaint View - Load treatments when complaint is selected
-const complaintSelect = document.getElementById('complaintSelect');
-const complaintResults = document.getElementById('complaintResults');
-const complaintEmpty = document.getElementById('complaintEmpty');
-const treatmentsList = document.getElementById('treatmentsList');
-const doctorsExperienceList = document.getElementById('doctorsExperienceList');
-
-// Check if complaintSelect exists and has options
-if (complaintSelect && complaintSelect.options.length <= 1) {
-    // If no complaints, show a message in the empty state
-    complaintEmpty.style.display = 'block';
-    complaintEmpty.innerHTML = `
-        <span class="material-icons">error</span>
-        <h3>No complaints found in database</h3>
-        <p>Please run the insert_tables.sql script to populate the Complaint table.</p>
-    `;
-} else {
-    complaintEmpty.style.display = 'block';
-}
-
-complaintSelect.addEventListener('change', async () => {
-    const complaintCode = complaintSelect.value;
-    
-    if (!complaintCode) {
-        complaintResults.style.display = 'none';
-        complaintEmpty.style.display = 'block';
-        return;
-    }
-    
-    // Show loading state
-    treatmentsList.innerHTML = '<div class="loading-spinner" style="margin: 20px auto; display: block;"></div>';
-    doctorsExperienceList.innerHTML = '<div class="loading-spinner" style="margin: 20px auto; display: block;"></div>';
-    complaintResults.style.display = 'block';
-    complaintEmpty.style.display = 'none';
-    
-    try {
-        const formData = new FormData();
-        formData.append('action', 'get_treatments_by_complaint');
-        formData.append('complaint_code', complaintCode);
-        
-        const response = await fetch(window.location.href, {
-            method: 'POST',
-            body: formData,
-            headers: {
-                'X-Requested-With': 'XMLHttpRequest'
-            }
-        });
-        
-        const data = await response.json();
-        
-        if (data.success) {
-            // Render treatments
-            if (data.treatments && data.treatments.length > 0) {
-                treatmentsList.innerHTML = data.treatments.map(t => `
-                    <div class="treatment-item">
-                        <div style="font-weight: 600; color: #1E3A5F; margin-bottom: 8px;">
-                            Treatment #${escapeHtml(t.t_code)}
-                        </div>
-                        <div style="font-size: 0.85rem; color: #6B7E92;">
-                            Patient: ${escapeHtml(t.patient_name || 'Unknown')}
-                        </div>
-                        <div style="font-size: 0.85rem; color: #6B7E92;">
-                            Doctor: ${escapeHtml(t.doctor_name || 'Unknown')}
-                        </div>
-                        <div style="font-size: 0.75rem; color: #A0AEC0; margin-top: 8px;">
-                            Started: ${t.startdate ? new Date(t.startdate).toLocaleDateString() : 'N/A'} | 
-                            Ended: ${t.enddate ? new Date(t.enddate).toLocaleDateString() : 'Ongoing'}
-                        </div>
-                    </div>
-                `).join('');
-            } else {
-                treatmentsList.innerHTML = '<div class="empty-state" style="padding: 40px;"><p>No treatments found for this complaint</p></div>';
-            }
-            
-            // Render doctors experience
-            if (data.doctors && data.doctors.length > 0) {
-                // Group doctors to show unique ones with their experience
-                const uniqueDoctors = {};
-                data.doctors.forEach(d => {
-                    if (!uniqueDoctors[d.doctor_name]) {
-                        uniqueDoctors[d.doctor_name] = {
-                            doctor_name: d.doctor_name,
-                            position: d.position,
-                            speciality: d.speciality,
-                            experiences: []
-                        };
-                    }
-                    if (d.establishment) {
-                        uniqueDoctors[d.doctor_name].experiences.push({
-                            establishment: d.establishment,
-                            position: d.prev_position,
-                            from_date: d.from_date,
-                            to_date: d.to_date
-                        });
-                    }
-                });
-                
-                doctorsExperienceList.innerHTML = Object.values(uniqueDoctors).map(d => `
-                    <div class="treatment-item">
-                        <div style="font-weight: 600; color: #1E3A5F; margin-bottom: 8px;">
-                            ${escapeHtml(d.doctor_name)}
-                        </div>
-                        <div style="font-size: 0.85rem; color: #6B7E92;">
-                            ${escapeHtml(d.position || 'Doctor')}
-                        </div>
-                        <div style="font-size: 0.85rem; color: #6B7E92; margin-bottom: 12px;">
-                            Specialty: ${escapeHtml(d.speciality || 'General')}
-                        </div>
-                        ${d.experiences.length > 0 ? `
-                            <div style="font-size: 0.75rem; color: #A0AEC0;">
-                                <strong>Experience:</strong>
-                                ${d.experiences.map(exp => `
-                                    <div>• ${exp.position || 'Position'} at ${exp.establishment} 
-                                    (${exp.from_date ? new Date(exp.from_date).getFullYear() : 'N/A'} - ${exp.to_date ? new Date(exp.to_date).getFullYear() : 'Present'})</div>
-                                `).join('')}
-                            </div>
-                        ` : '<div style="font-size: 0.75rem; color: #A0AEC0;">No experience records available</div>'}
-                    </div>
-                `).join('');
-            } else {
-                doctorsExperienceList.innerHTML = '<div class="empty-state" style="padding: 40px;"><p>No doctors found for this complaint</p></div>';
-            }
-        }
-    } catch (error) {
-        console.error('Error:', error);
-        treatmentsList.innerHTML = '<div class="empty-state"><p>Error loading treatments</p></div>';
-    }
-});
-
-// Date Range Filter functionality
-const applyFilterBtn = document.getElementById('applyFilterBtn');
-const clearFiltersBtn = document.getElementById('clearFiltersBtn');
-const filterComplaintSelect = document.getElementById('filterComplaintSelect');
-const startDate = document.getElementById('startDate');
-const endDate = document.getElementById('endDate');
-const treatmentsByDateList = document.getElementById('treatmentsByDateList');
-
-async function loadTreatmentsByDateRange() {
-    const complaintCode = filterComplaintSelect.value;
-    const start = startDate.value;
-    const end = endDate.value;
-    
-    treatmentsByDateList.innerHTML = '<div class="loading-spinner" style="margin: 40px auto; display: block;"></div>';
-    
-    try {
-        const formData = new FormData();
-        formData.append('action', 'get_treatments_by_date_range');
-        formData.append('complaint_code', complaintCode);
-        formData.append('start_date', start);
-        formData.append('end_date', end);
-        
-        const response = await fetch(window.location.href, {
-            method: 'POST',
-            body: formData,
-            headers: {
-                'X-Requested-With': 'XMLHttpRequest'
-            }
-        });
-        
-        const data = await response.json();
-        
-        if (data.success && data.treatments) {
-            if (data.treatments.length > 0) {
-                treatmentsByDateList.innerHTML = data.treatments.map(t => `
-                    <div class="treatment-item">
-                        <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 12px;">
-                            <div>
-                                <div style="font-weight: 600; color: #1E3A5F; margin-bottom: 8px;">
-                                    Treatment #${escapeHtml(t.t_code)}
-                                </div>
-                                <div style="font-size: 0.85rem; color: #6B7E92;">
-                                    Patient: ${escapeHtml(t.patient_name)}
-                                </div>
-                                <div style="font-size: 0.85rem; color: #6B7E92;">
-                                    Doctor: ${escapeHtml(t.doctor_name)}
-                                </div>
-                                <div style="font-size: 0.85rem; color: #6B7E92;">
-                                    Date: ${t.treatment_start_date ? new Date(t.treatment_start_date).toLocaleDateString() : 'N/A'}
-                                </div>
-                            </div>
-                            <div style="text-align: right;">
-                                <div class="grade-badge grade-Good" style="margin-bottom: 8px;">
-                                    ${escapeHtml(t.complaint_title)}
-                                </div>
-                                <div style="font-size: 0.75rem; color: #A0AEC0;">
-                                    ${t.treatment_end_date ? 'Completed: ' + new Date(t.treatment_end_date).toLocaleDateString() : 'Ongoing'}
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                `).join('');
-            } else {
-                treatmentsByDateList.innerHTML = '<div class="empty-state"><span class="material-icons">search</span><h3>No treatments found</h3><p>Try adjusting your filter criteria</p></div>';
-            }
-        }
-    } catch (error) {
-        console.error('Error:', error);
-        treatmentsByDateList.innerHTML = '<div class="empty-state"><p>Error loading treatments</p></div>';
-    }
-}
-
-if (applyFilterBtn) {
-    applyFilterBtn.addEventListener('click', loadTreatmentsByDateRange);
-}
-if (clearFiltersBtn) {
-    clearFiltersBtn.addEventListener('click', () => {
-        filterComplaintSelect.value = '';
-        startDate.value = '';
-        endDate.value = '';
-        loadTreatmentsByDateRange();
-    });
-}
-
-// Performance & History functionality
-const doctorSearchInput = document.getElementById('doctorSearchInput');
-const doctorSuggestions = document.getElementById('doctorSuggestions');
-const doctorPerformanceResults = document.getElementById('doctorPerformanceResults');
-const performanceEmpty = document.getElementById('performanceEmpty');
-const doctorInfo = document.getElementById('doctorInfo');
-const performanceHistory = document.getElementById('performanceHistory');
-const experienceHistory = document.getElementById('experienceHistory');
-
-let doctorsList = <?php echo json_encode($doctor_list); ?>;
-
-if (doctorSearchInput) {
-    doctorSearchInput.addEventListener('input', () => {
-        const searchTerm = doctorSearchInput.value.toLowerCase();
-        
-        if (searchTerm.length < 2) {
-            doctorSuggestions.style.display = 'none';
-            return;
-        }
-        
-        const filtered = doctorsList.filter(doc => 
-            doc.name.toLowerCase().includes(searchTerm) || 
-            doc.specialty.toLowerCase().includes(searchTerm)
-        );
-        
-        if (filtered.length > 0) {
-            doctorSuggestions.innerHTML = filtered.map(doc => `
-                <div class="doctor-suggestion-item" data-doctor-id="${doc.id}" data-doctor-name="${doc.name}" data-doctor-specialty="${doc.specialty}" data-doctor-position="${doc.position}">
-                    <div class="doctor-suggestion-name">${escapeHtml(doc.name)}</div>
-                    <div class="doctor-suggestion-specialty">${escapeHtml(doc.specialty)} • ${escapeHtml(doc.position)}</div>
+            <?php if ($doctor_search > 0 && $doctor_performance && $doctor_performance['info']): ?>
+                <div class="stats-grid">
+                    <div class="stat-card"><div class="stat-number"><?php echo $doctor_performance['total_patients']; ?></div><div class="stat-label">Total Patients</div></div>
+                    <div class="stat-card"><div class="stat-number"><?php echo $doctor_performance['completed_treatments']; ?></div><div class="stat-label">Completed Treatments</div></div>
+                    <div class="stat-card"><div class="stat-number"><?php echo $doctor_performance['ongoing_treatments']; ?></div><div class="stat-label">Ongoing Treatments</div></div>
                 </div>
-            `).join('');
-            doctorSuggestions.style.display = 'block';
-            
-            // Add click handlers
-            document.querySelectorAll('.doctor-suggestion-item').forEach(item => {
-                item.addEventListener('click', () => {
-                    const doctorId = item.dataset.doctorId;
-                    const doctorName = item.dataset.doctorName;
-                    const doctorSpecialty = item.dataset.doctorSpecialty;
-                    const doctorPosition = item.dataset.doctorPosition;
-                    
-                    doctorSearchInput.value = doctorName;
-                    doctorSuggestions.style.display = 'none';
-                    loadDoctorPerformance(doctorId, doctorName, doctorSpecialty, doctorPosition);
-                });
-            });
-        } else {
-            doctorSuggestions.style.display = 'none';
-        }
-    });
-}
-
-// Close suggestions when clicking outside
-document.addEventListener('click', (e) => {
-    if (doctorSearchInput && doctorSuggestions && !doctorSearchInput.contains(e.target) && !doctorSuggestions.contains(e.target)) {
-        doctorSuggestions.style.display = 'none';
-    }
-});
-
-async function loadDoctorPerformance(doctorId, doctorName, doctorSpecialty, doctorPosition) {
-    doctorPerformanceResults.style.display = 'block';
-    performanceEmpty.style.display = 'none';
-    
-    // Show loading
-    performanceHistory.innerHTML = '<div class="loading-spinner" style="margin: 40px auto; display: block;"></div>';
-    experienceHistory.innerHTML = '<div class="loading-spinner" style="margin: 40px auto; display: block;"></div>';
-    
-    // Display doctor info
-    doctorInfo.innerHTML = `
-        <div style="display: flex; align-items: center; gap: 20px; flex-wrap: wrap;">
-            <div class="doctor-avatar">${doctorName.charAt(0)}</div>
-            <div>
-                <h2 style="color: #1A2B3C; margin-bottom: 8px;">${escapeHtml(doctorName)}</h2>
-                <p style="color: #6B7E92; margin-bottom: 4px;">${escapeHtml(doctorPosition)}</p>
-                <p style="color: #6B7E92;">${escapeHtml(doctorSpecialty)}</p>
-            </div>
-        </div>
-    `;
-    
-    try {
-        const formData = new FormData();
-        formData.append('action', 'get_doctor_performance');
-        formData.append('doctor_id', doctorId);
-        
-        const response = await fetch(window.location.href, {
-            method: 'POST',
-            body: formData,
-            headers: {
-                'X-Requested-With': 'XMLHttpRequest'
-            }
-        });
-        
-        const data = await response.json();
-        
-        if (data.success) {
-            // Render performance history
-            if (data.performance && data.performance.length > 0) {
-                performanceHistory.innerHTML = `
-                    <h3 style="color: #1E3A5F; margin-bottom: 20px;">Patient Progress Notes</h3>
-                    ${data.performance.map(p => `
-                        <div class="performance-item">
-                            <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 12px; margin-bottom: 12px;">
-                                <span class="grade-badge grade-Good">Patient: ${escapeHtml(p.patient_name || 'N/A')}</span>
-                                <span style="font-size: 0.8rem; color: #A0AEC0;">${p.review_date ? new Date(p.review_date).toLocaleDateString() : 'Date unknown'}</span>
-                            </div>
-                            <p style="color: #4A5568; margin-bottom: 12px;">${escapeHtml(p.performance_grade || 'No notes')}</p>
+                
+                <!-- Doctor Info Card -->
+                <div class="doctor-card">
+                    <div style="display: flex; align-items: center; gap: 20px; flex-wrap: wrap;">
+                        <div class="doctor-avatar"><?php echo substr(htmlspecialchars($doctor_performance['info']['doctor_name']), 0, 1); ?></div>
+                        <div>
+                            <h2 style="color: #1A2B3C; margin-bottom: 8px;">Dr. <?php echo htmlspecialchars($doctor_performance['info']['doctor_name']); ?></h2>
+                            <p style="color: #6B7E92; margin-bottom: 4px;"><?php echo htmlspecialchars($doctor_performance['info']['current_position']); ?></p>
                         </div>
-                    `).join('')}
-                `;
-            } else {
-                performanceHistory.innerHTML = '<div class="empty-state" style="padding: 40px;"><p>No progress notes found for this doctor</p></div>';
-            }
-            
-            // Render experience history from PrevExperience
-            if (data.experience && data.experience.length > 0) {
-                experienceHistory.innerHTML = `
-                    <h3 style="color: #1E3A5F; margin-bottom: 20px;">Previous Experience</h3>
-                    <div style="overflow-x: auto;">
-                        <table style="width: 100%; border-collapse: collapse;">
+                    </div>
+                </div>
+                
+                <!-- Experience History Section -->
+                <div class="treatment-item">
+                    <h3 style="color: #1E3A5F; margin-bottom: 20px;"> Employment History</h3>
+                    <?php if (!empty($doctor_performance['experience'])): ?>
+                        <?php foreach ($doctor_performance['experience'] as $exp): ?>
+                            <div class="experience-item">
+                                <div>
+                                    <div class="experience-establishment"><?php echo htmlspecialchars($exp['establishment']); ?></div>
+                                    <div class="experience-position"><?php echo htmlspecialchars($exp['previous_position']); ?></div>
+                                </div>
+                                <div class="experience-date">
+                                    <?php echo $exp['from_date']; ?> → <?php echo $exp['to_date'] ?? 'Present'; ?>
+                                    <?php if ($exp['years_in_position']): ?><br>(<?php echo $exp['years_in_position']; ?> years)<?php endif; ?>
+                                </div>
+                            </div>
+                        <?php endforeach; ?>
+                    <?php else: ?>
+                        <p style="color: #718096;">No previous employment history recorded.</p>
+                    <?php endif; ?>
+                </div>
+                
+                <!-- Patient Records Section -->
+                <div class="treatment-item">
+                    <h3 style="color: #1E3A5F; margin-bottom: 20px;"> Patient Records</h3>
+                    <?php if (!empty($doctor_performance['patients'])): ?>
+                        <table class="data-table">
                             <thead>
-                                <tr style="background: #F8FAFC; border-bottom: 2px solid #E2E8F0;">
-                                    <th style="padding: 12px; text-align: left; color: #4A5568;">From</th>
-                                    <th style="padding: 12px; text-align: left; color: #4A5568;">To</th>
-                                    <th style="padding: 12px; text-align: left; color: #4A5568;">Position</th>
-                                    <th style="padding: 12px; text-align: left; color: #4A5568;">Establishment</th>
-                                </tr>
+                                <tr><th>Patient</th><th>Complaint</th><th>Treatment #</th><th>Start Date</th><th>End Date</th><th>Status</th></tr>
                             </thead>
                             <tbody>
-                                ${data.experience.map(exp => `
-                                    <tr style="border-bottom: 1px solid #E2E8F0;">
-                                        <td style="padding: 12px; color: #6B7E92;">${exp.from_date ? new Date(exp.from_date).toLocaleDateString() : 'N/A'}</td>
-                                        <td style="padding: 12px; color: #6B7E92;">${exp.to_date ? new Date(exp.to_date).toLocaleDateString() : 'Present'}</td>
-                                        <td style="padding: 12px; color: #1A2B3C;">${escapeHtml(exp.position || 'N/A')}</td>
-                                        <td style="padding: 12px; color: #6B7E92;">${escapeHtml(exp.establishment || 'N/A')}</td>
+                                <?php foreach ($doctor_performance['patients'] as $patient): ?>
+                                    <tr>
+                                        <td><?php echo htmlspecialchars($patient['patient_name']); ?></td>
+                                        <td><?php echo htmlspecialchars($patient['complaint_title']); ?></td>
+                                        <td><?php echo $patient['t_code'] ? '#'.$patient['t_code'] : 'No treatment'; ?></td>
+                                        <td><?php echo $patient['startdate'] ?? '-'; ?></td>
+                                        <td><?php echo $patient['enddate'] ?? ($patient['startdate'] ? 'Ongoing' : '-'); ?></td>
+                                        <td><span class="status-<?php echo strtolower(str_replace(' ', '', $patient['treatment_status'])); ?>"><?php echo $patient['treatment_status']; ?></span></td>
                                     </tr>
-                                `).join('')}
+                                <?php endforeach; ?>
                             </tbody>
                         </table>
-                    </div>
-                `;
-            } else {
-                experienceHistory.innerHTML = '<div class="empty-state" style="padding: 40px;"><p>No experience history found</p></div>';
-            }
-        }
-    } catch (error) {
-        console.error('Error:', error);
-        performanceHistory.innerHTML = '<div class="empty-state"><p>Error loading performance data</p></div>';
-    }
-}
+                    <?php else: ?>
+                        <div class="empty-state" style="padding: 40px;">
+                            <span class="material-icons">folder_open</span>
+                            <p>No patient records found for this doctor.</p>
+                        </div>
+                    <?php endif; ?>
+                </div>
+                
+            <?php elseif ($doctor_search > 0): ?>
+                <div class="empty-state">
+                    <span class="material-icons">error_outline</span>
+                    <p>No performance data found for the selected doctor.</p>
+                </div>
+            <?php else: ?>
+                <div class="empty-state">
+                    <span class="material-icons">person_search</span>
+                    <p>Select a doctor from the dropdown above to view their performance history and employment experience.</p>
+                </div>
+            <?php endif; ?>
+        </div>
+    </div>
+    <?php endif; ?>
+</div>
 
-// Helper function to escape HTML
-function escapeHtml(text) {
-    if (!text) return '';
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
-// Show initial empty state for complaint view
-if (complaintEmpty && complaintSelect && complaintSelect.options.length <= 1) {
-    // Already handled above
-} else if (complaintEmpty) {
-    complaintEmpty.style.display = 'block';
-}
-
-// Initially load empty date range view
-if (treatmentsByDateList) {
-    treatmentsByDateList.innerHTML = '<div class="empty-state"><span class="material-icons">filter_alt</span><h3>Apply filters to view treatments</h3><p>Select complaint and date range above</p></div>';
-}
-</script>
+</body>
+</html>
