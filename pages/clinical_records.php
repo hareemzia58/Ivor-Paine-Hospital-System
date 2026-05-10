@@ -4,12 +4,30 @@ require_once '../php/db_connect.php';
 
 $conn = db();
 
-// Get data for dropdowns
+// DEBUG: Check if connection works and get complaints
 $complaints = [];
 $complaints_result = sqlsrv_query($conn, "SELECT c_code, title, description FROM Complaint ORDER BY title");
-if ($complaints_result) {
+
+if ($complaints_result === false) {
+    // Log error for debugging
+    $errors = sqlsrv_errors();
+    error_log("Complaint query failed: " . print_r($errors, true));
+} else {
     while ($row = sqlsrv_fetch_array($complaints_result, SQLSRV_FETCH_ASSOC)) {
         $complaints[] = $row;
+    }
+}
+
+// Alternative query if the first one fails - try selecting from the actual table structure
+if (empty($complaints)) {
+    // Try a simpler query to check if table exists and has data
+    $test_result = sqlsrv_query($conn, "SELECT COUNT(*) as count FROM Complaint");
+    if ($test_result) {
+        $count_row = sqlsrv_fetch_array($test_result, SQLSRV_FETCH_ASSOC);
+        error_log("Complaint table has " . ($count_row ? $count_row['count'] : 0) . " records");
+    } else {
+        $errors = sqlsrv_errors();
+        error_log("Complaint table may not exist: " . print_r($errors, true));
     }
 }
 
@@ -47,7 +65,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         
         if ($complaint_code) {
             // Query #6: A list of complaints, treatments given for that complaint and experience history 
-            // of the doctor giving that particular treatment
             $sql = "
                 SELECT DISTINCT 
                     t.t_code,
@@ -58,10 +75,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
                     p.fname + ' ' + p.lname as patient_name,
                     c.title as complaint_title
                 FROM Treatment t
-                JOIN Complaint c ON t.p_id = c.p_id AND c.c_code = ?
-                JOIN Doctor d ON t.d_id = d.d_id
-                JOIN Staff s ON d.d_id = s.st_id
-                JOIN Patient p ON t.p_id = p.p_id
+                INNER JOIN Complaint c ON t.p_id = c.p_id AND c.c_code = ?
+                INNER JOIN Doctor d ON t.d_id = d.d_id
+                INNER JOIN Staff s ON d.d_id = s.st_id
+                INNER JOIN Patient p ON t.p_id = p.p_id
                 WHERE c.c_code = ?
                 ORDER BY t.startdate DESC
             ";
@@ -86,9 +103,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
                     pe.from_date,
                     pe.to_date
                 FROM Treatment t
-                JOIN Complaint c ON t.p_id = c.p_id AND c.c_code = ?
-                JOIN Doctor d ON t.d_id = d.d_id
-                JOIN Staff s ON d.d_id = s.st_id
+                INNER JOIN Complaint c ON t.p_id = c.p_id AND c.c_code = ?
+                INNER JOIN Doctor d ON t.d_id = d.d_id
+                INNER JOIN Staff s ON d.d_id = s.st_id
                 LEFT JOIN Consultant cons ON d.d_id = cons.c_id
                 LEFT JOIN Speciality sp ON cons.sp_id = sp.sp_id
                 LEFT JOIN PrevExperience pe ON d.d_id = pe.d_id
@@ -113,8 +130,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         $start_date = $_POST['start_date'] ?? '';
         $end_date = $_POST['end_date'] ?? '';
         
-        // Query #11: A list of treatments that have been given for a particular complaint 
-        // between two given dates ordered by treatment
         $sql = "
             SELECT 
                 t.t_code,
@@ -122,13 +137,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
                 t.enddate as treatment_end_date,
                 s.fname + ' ' + s.lname as doctor_name,
                 p.fname + ' ' + p.lname as patient_name,
-                c.title as complaint_title,
-                c.description as complaint_description
+                c.title as complaint_title
             FROM Treatment t
-            JOIN Complaint c ON t.p_id = c.p_id
-            JOIN Doctor d ON t.d_id = d.d_id
-            JOIN Staff s ON d.d_id = s.st_id
-            JOIN Patient p ON t.p_id = p.p_id
+            INNER JOIN Complaint c ON t.p_id = c.p_id
+            INNER JOIN Doctor d ON t.d_id = d.d_id
+            INNER JOIN Staff s ON d.d_id = s.st_id
+            INNER JOIN Patient p ON t.p_id = p.p_id
             WHERE 1=1
         ";
         $params = [];
@@ -172,11 +186,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
                 SELECT 
                     pr.date_grade as review_date,
                     pr.performance as performance_grade,
-                    pr.performance as comments,
-                    s.fname + ' ' + s.lname as patient_name
+                    p.fname + ' ' + p.lname as patient_name
                 FROM Progress pr
-                JOIN Patient p ON pr.p_id = p.p_id
-                JOIN Staff s ON p.p_id = s.st_id
+                INNER JOIN Patient p ON pr.p_id = p.p_id
                 WHERE pr.c_id = ?
                 ORDER BY pr.date_grade DESC
             ";
@@ -217,9 +229,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
         
         if ($patient_id) {
             // Query #10: Full medical details for a particular patient
-            // Query #3: A list of patients and their complaints, treatments and dates of treatment
-            
-            // Get patient basic info
             $patient_sql = "
                 SELECT 
                     p.p_id,
@@ -385,10 +394,11 @@ foreach ($doctors as $doc) {
         background: rgba(30, 58, 95, 0.1);
     }
     
+    /* Updated active style for subtabs - matches main tabs but smaller */
     .clinical-subtab.active {
-        background: white;
-        color: #1E3A5F;
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+        background: linear-gradient(135deg, #1E3A5F 0%, #2C527A 100%);
+        color: white;
+        box-shadow: 0 2px 8px rgba(30, 58, 95, 0.25);
     }
     
     .filter-grid {
@@ -631,6 +641,17 @@ foreach ($doctors as $doc) {
         background: #E2E8F0;
     }
     
+    /* Debug info styling */
+    .debug-info {
+        background: #FEF3C7;
+        border-left: 4px solid #F59E0B;
+        padding: 12px 16px;
+        margin-bottom: 20px;
+        border-radius: 8px;
+        font-size: 0.85rem;
+        color: #92400E;
+    }
+    
     @media (max-width: 768px) {
         .clinical-tab span:last-child {
             display: none;
@@ -650,6 +671,14 @@ foreach ($doctors as $doc) {
         <h1 class="page-title">Clinical Records</h1>
         <p class="page-subtitle">View and manage patient complaints, treatments, and medical history</p>
     </div>
+    
+    <!-- DEBUG: Show complaint count if empty -->
+    <?php if (empty($complaints)): ?>
+    <div class="debug-info">
+        <strong>⚠️ Debug Info:</strong> No complaints found in database. 
+        Please check that the Complaint table has data. Run the insert_tables.sql file again.
+    </div>
+    <?php endif; ?>
     
     <!-- Main Tabs -->
     <div class="clinical-tabs">
@@ -792,14 +821,16 @@ document.querySelectorAll('.clinical-tab').forEach(tab => {
     });
 });
 
-// Subtab switching
+// Subtab switching - UPDATED to use blue gradient when active
 document.querySelectorAll('.clinical-subtab').forEach(subtab => {
     subtab.addEventListener('click', () => {
         const subtabId = subtab.dataset.subtab;
         
+        // Update active state on subtabs
         document.querySelectorAll('.clinical-subtab').forEach(st => st.classList.remove('active'));
         subtab.classList.add('active');
         
+        // Show/hide content
         document.getElementById('complaintView').style.display = subtabId === 'complaint-view' ? 'block' : 'none';
         document.getElementById('dateRangeView').style.display = subtabId === 'date-range' ? 'block' : 'none';
     });
@@ -811,6 +842,19 @@ const complaintResults = document.getElementById('complaintResults');
 const complaintEmpty = document.getElementById('complaintEmpty');
 const treatmentsList = document.getElementById('treatmentsList');
 const doctorsExperienceList = document.getElementById('doctorsExperienceList');
+
+// Check if complaintSelect exists and has options
+if (complaintSelect && complaintSelect.options.length <= 1) {
+    // If no complaints, show a message in the empty state
+    complaintEmpty.style.display = 'block';
+    complaintEmpty.innerHTML = `
+        <span class="material-icons">error</span>
+        <h3>No complaints found in database</h3>
+        <p>Please run the insert_tables.sql script to populate the Complaint table.</p>
+    `;
+} else {
+    complaintEmpty.style.display = 'block';
+}
 
 complaintSelect.addEventListener('change', async () => {
     const complaintCode = complaintSelect.value;
@@ -993,13 +1037,17 @@ async function loadTreatmentsByDateRange() {
     }
 }
 
-applyFilterBtn.addEventListener('click', loadTreatmentsByDateRange);
-clearFiltersBtn.addEventListener('click', () => {
-    filterComplaintSelect.value = '';
-    startDate.value = '';
-    endDate.value = '';
-    loadTreatmentsByDateRange();
-});
+if (applyFilterBtn) {
+    applyFilterBtn.addEventListener('click', loadTreatmentsByDateRange);
+}
+if (clearFiltersBtn) {
+    clearFiltersBtn.addEventListener('click', () => {
+        filterComplaintSelect.value = '';
+        startDate.value = '';
+        endDate.value = '';
+        loadTreatmentsByDateRange();
+    });
+}
 
 // Performance & History functionality
 const doctorSearchInput = document.getElementById('doctorSearchInput');
@@ -1012,49 +1060,51 @@ const experienceHistory = document.getElementById('experienceHistory');
 
 let doctorsList = <?php echo json_encode($doctor_list); ?>;
 
-doctorSearchInput.addEventListener('input', () => {
-    const searchTerm = doctorSearchInput.value.toLowerCase();
-    
-    if (searchTerm.length < 2) {
-        doctorSuggestions.style.display = 'none';
-        return;
-    }
-    
-    const filtered = doctorsList.filter(doc => 
-        doc.name.toLowerCase().includes(searchTerm) || 
-        doc.specialty.toLowerCase().includes(searchTerm)
-    );
-    
-    if (filtered.length > 0) {
-        doctorSuggestions.innerHTML = filtered.map(doc => `
-            <div class="doctor-suggestion-item" data-doctor-id="${doc.id}" data-doctor-name="${doc.name}" data-doctor-specialty="${doc.specialty}" data-doctor-position="${doc.position}">
-                <div class="doctor-suggestion-name">${escapeHtml(doc.name)}</div>
-                <div class="doctor-suggestion-specialty">${escapeHtml(doc.specialty)} • ${escapeHtml(doc.position)}</div>
-            </div>
-        `).join('');
-        doctorSuggestions.style.display = 'block';
+if (doctorSearchInput) {
+    doctorSearchInput.addEventListener('input', () => {
+        const searchTerm = doctorSearchInput.value.toLowerCase();
         
-        // Add click handlers
-        document.querySelectorAll('.doctor-suggestion-item').forEach(item => {
-            item.addEventListener('click', () => {
-                const doctorId = item.dataset.doctorId;
-                const doctorName = item.dataset.doctorName;
-                const doctorSpecialty = item.dataset.doctorSpecialty;
-                const doctorPosition = item.dataset.doctorPosition;
-                
-                doctorSearchInput.value = doctorName;
-                doctorSuggestions.style.display = 'none';
-                loadDoctorPerformance(doctorId, doctorName, doctorSpecialty, doctorPosition);
+        if (searchTerm.length < 2) {
+            doctorSuggestions.style.display = 'none';
+            return;
+        }
+        
+        const filtered = doctorsList.filter(doc => 
+            doc.name.toLowerCase().includes(searchTerm) || 
+            doc.specialty.toLowerCase().includes(searchTerm)
+        );
+        
+        if (filtered.length > 0) {
+            doctorSuggestions.innerHTML = filtered.map(doc => `
+                <div class="doctor-suggestion-item" data-doctor-id="${doc.id}" data-doctor-name="${doc.name}" data-doctor-specialty="${doc.specialty}" data-doctor-position="${doc.position}">
+                    <div class="doctor-suggestion-name">${escapeHtml(doc.name)}</div>
+                    <div class="doctor-suggestion-specialty">${escapeHtml(doc.specialty)} • ${escapeHtml(doc.position)}</div>
+                </div>
+            `).join('');
+            doctorSuggestions.style.display = 'block';
+            
+            // Add click handlers
+            document.querySelectorAll('.doctor-suggestion-item').forEach(item => {
+                item.addEventListener('click', () => {
+                    const doctorId = item.dataset.doctorId;
+                    const doctorName = item.dataset.doctorName;
+                    const doctorSpecialty = item.dataset.doctorSpecialty;
+                    const doctorPosition = item.dataset.doctorPosition;
+                    
+                    doctorSearchInput.value = doctorName;
+                    doctorSuggestions.style.display = 'none';
+                    loadDoctorPerformance(doctorId, doctorName, doctorSpecialty, doctorPosition);
+                });
             });
-        });
-    } else {
-        doctorSuggestions.style.display = 'none';
-    }
-});
+        } else {
+            doctorSuggestions.style.display = 'none';
+        }
+    });
+}
 
 // Close suggestions when clicking outside
 document.addEventListener('click', (e) => {
-    if (!doctorSearchInput.contains(e.target) && !doctorSuggestions.contains(e.target)) {
+    if (doctorSearchInput && doctorSuggestions && !doctorSearchInput.contains(e.target) && !doctorSuggestions.contains(e.target)) {
         doctorSuggestions.style.display = 'none';
     }
 });
@@ -1159,8 +1209,14 @@ function escapeHtml(text) {
 }
 
 // Show initial empty state for complaint view
-complaintEmpty.style.display = 'block';
+if (complaintEmpty && complaintSelect && complaintSelect.options.length <= 1) {
+    // Already handled above
+} else if (complaintEmpty) {
+    complaintEmpty.style.display = 'block';
+}
 
 // Initially load empty date range view
-treatmentsByDateList.innerHTML = '<div class="empty-state"><span class="material-icons">filter_alt</span><h3>Apply filters to view treatments</h3><p>Select complaint and date range above</p></div>';
+if (treatmentsByDateList) {
+    treatmentsByDateList.innerHTML = '<div class="empty-state"><span class="material-icons">filter_alt</span><h3>Apply filters to view treatments</h3><p>Select complaint and date range above</p></div>';
+}
 </script>
