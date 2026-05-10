@@ -15,19 +15,6 @@ GO
 USE IvorPaineHospital;
 GO
 
-CREATE TABLE UserLogin (
-    st_id INT PRIMARY KEY,
-    password_hash VARCHAR(255) NOT NULL,
-    is_active BIT DEFAULT 1,
-    created_date DATETIME DEFAULT GETDATE(),
-    
-    CONSTRAINT FK_UserLogin_Staff FOREIGN KEY (st_id) 
-        REFERENCES Staff(st_id) ON DELETE CASCADE
-);
-
-PRINT 'UserLogin table created successfully';
-GO
-
 
 -- 1. STAFF TABLE (Base Table)
 CREATE TABLE Staff (
@@ -232,6 +219,21 @@ CREATE TABLE Nurse_Ward_Assignment (
     CONSTRAINT CHK_AssignmentDateRange CHECK (to_date IS NULL OR to_date >= from_date)
 );
  
+
+CREATE TABLE UserLogin (
+    st_id INT PRIMARY KEY,
+    password_hash VARCHAR(255) NOT NULL,
+    is_active BIT DEFAULT 1,
+    created_date DATETIME DEFAULT GETDATE(),
+    
+    CONSTRAINT FK_UserLogin_Staff FOREIGN KEY (st_id) 
+        REFERENCES Staff(st_id) ON DELETE CASCADE
+);
+
+PRINT 'UserLogin table created successfully';
+GO
+
+
 -- CREATE INDEXES FOR PERFORMANCE
  
 -- Patient Indexes
