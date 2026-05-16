@@ -1,4 +1,4 @@
-# 🏥 Ivor Paine Memorial Hospital (IPMH) - Hospital Management System
+# Ivor Paine Memorial Hospital (IPMH) - Hospital Management System
 
 [![PHP Version](https://img.shields.io/badge/PHP-7.4%2B-blue.svg)](https://php.net)
 [![SQL Server](https://img.shields.io/badge/SQL%20Server-2012%2B-red.svg)](https://www.microsoft.com/sql-server)
