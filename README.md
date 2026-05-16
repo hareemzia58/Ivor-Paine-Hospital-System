@@ -89,7 +89,7 @@ The **Ivor Paine Memorial Hospital Management System** is a full-featured web ap
 
 #### 1. Clone the Repository
 ```bash
-git clone https://github.com/yourusername/ivor-paine-hospital-system.git
+git clone https://github.com/hareemzia58/ivor-paine-hospital-system.git
 cd ivor-paine-hospital-system
 ```
 #### 2. Configure Database Connection
