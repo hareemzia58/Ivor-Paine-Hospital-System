@@ -18,6 +18,8 @@ The **Ivor Paine Memorial Hospital Management System** is a full-featured web ap
 
 ---
 
+<img width="2288" height="1262" alt="Ivor_paine_login" src="https://github.com/user-attachments/assets/9636bc7d-aa1d-4e81-8fb6-2c63818f6a0e" />
+
 ## Features
 
 ### Patient Management
